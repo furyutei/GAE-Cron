@@ -5,4 +5,4 @@
 MaxUser : 50
 
 # MaxTimerPerUser: 1ユーザあたりの最大タイマ数
-MaxTimerPerUser : 5
+MaxTimerPerUser : 3

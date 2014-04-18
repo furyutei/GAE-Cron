@@ -1,12 +1,28 @@
 GAE-Cron
 簡易 web cron サービス
-version: 0.02
+version: 0.02a
   powered by Google App Engine
   License: The MIT license
-  Copyright (c) 2010 風柳(furyu-tei)
+  Copyright (c) 2010,2011 風柳(furyu-tei)
     http://d.hatena.ne.jp/furyu-tei/
     http://furyu.tea-nifty.com/annex/
     http://twitter.com/furyutei
+---------------------------------------------------
+■ 【注意】Google App Engineの新料金体系について
+  2011年9月23日現在当方が把握している限りでは、2011年11月1日より、GAEの新料金体系が適用される
+  模様です。
+  時間が取れなくて詳細は調べられていませんが、Free Quotaの範囲が大幅に狭まるため、これまで問題
+  無くGAE-Cronを使えていた方も突然使用出来なくなるといった事態もあり得ます。
+  これに対応するのは当方にとっては困難な状況となっておりますので、そうなったら課金を払う・
+  タイマ数を調節する・ソースを改修改修して対応する・諦める、など、ご利用されている方のご判断で
+  対処をお願いします。
+  ※12/1にPython 2.7が使えるようになればマルチスレッド化するなりして対処が可能となるかも知れ
+  　ません…が、申し訳ありませんが今のところ当方には対処予定はありません。悪しからず。
+  
+  [参考]
+    http://googleappengine.blogspot.com/2011/05/year-ahead-for-google-app-engine.html
+    http://googleappengine.blogspot.com/2011/09/few-adjustments-to-app-engines-upcoming.html
+
 ---------------------------------------------------
 ■ なにこれ？
 
@@ -81,6 +97,7 @@ version: 0.02
     +-- gaecron.py
     +-- gaetimer.py
     +-- index.yaml
+    +-- appengine_config.py   （※ version 0.02aで追加)
     +-- template
     |     +-- gc-top.html
     |     +-- gc-user-header.html
@@ -99,7 +116,7 @@ version: 0.02
   
   後で説明する修正箇所の修正が完了したら、ネット上にアップロード(デプロイ)します。
   
-  kWindows XPの場合、例えば
+  Windows XPの場合、例えば
   C:\GAE\gaecron
   に展開したとすると、Google App Engine Launcher の
   File → Add Existing Application... Ctrl+Shift+N の Application PATH に
@@ -182,16 +199,9 @@ version: 0.02
 
   1. アップロード(デプロイ)用ファイルの上書き
   
-    version 0.01f→0.02の差分ファイルは以下の通り。
-    gaecron/
-      +-- README
-      +-- gaecron.py
-      +-- gaetimer.py
-      +-- cron.yaml
-    
-    上記のファイルを上書きしてデプロイすること。
-    
-    ※旧バージョンでPATH 等を変更している場合は同様の変更を行なうこと。
+    基本的に、ファイルを全て上書きしてからデプロイする。
+    ただし、*.yaml 等の設定ファイルや、旧バージョンでPATH 等を変更している場合、前の設定を
+    メモしておいて、同様の変更を施してからデプロイすること。
     ※version 0.01e,0.01fからのバージョンアップの場合、上記ファイル以外はそのままでよい。
       それ以下のversionからの移行は、全ファイルを上書きした方が無難(PATH 等を変更して
       いる場合は忘れずに同様の変更を行なうこと)。
@@ -199,10 +209,23 @@ version: 0.02
   2. 全タイマの再設定
      
     管理者権限でログインし、画面左上部にある[全タイマ再設定]ボタンを押す。
-    ※これはどのversionからの移行でも必ず実施すること。
+    ※基本的に、どのversionからの移行でも実施すること（ただし、0.02→0.02aの以降は
+    　うまく行けば再設定しなくてもいいかも…それでも、うまくいってなさそうなときは
+    　やはり実施が必要。
+    ※実施するとタイマがリセットされるので、特に長い周期のタイマを設定している
+    　人には影響が大きいことがわかっているが、今のところ対処の予定なし。
 
 
 ■履歴
+- 2011.09.23: version 0.02a
+  ・添付のgaecron.yamlのMaxTimerPerUser(デフォルト値)を5→3に変更。
+  ・使用するDjangoのバージョンを明示(appengine_config.pyファイルを追加)。
+  ・GAE_Timer()を冗長に呼んでいた箇所があったのを修正(gaecron.py)。
+  ・ユーザの登録を削除した際、タイマが残ってしまうことがある不具合の修正(gaecron.py)。
+  ・templateの文言など修正(gcc-top.html、gc-user-header.html)
+  ・appidに"s~"が付く場合があるのに対応(gaecron.py)。
+  ・パフォーマンス改善(gaetimer.py)。
+  
 - 2010.10.25: version 0.02
   ・タイマ処理がより安定するように全面改修(gaetimer.py)。
     ※全てmemcacheで処理していたものを基本データをdatastoreに持たすように修正。

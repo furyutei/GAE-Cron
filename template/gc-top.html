@@ -43,10 +43,12 @@
 
 <h2>なにこれ？</h2>
 <div class="container note">
-  <p>あらかじめ周期とURLを設定しておくと、それに応じた時刻にURLをGETメソッドでコールする、いわゆるweb cronサービスです。<br />
-  無料で使用できますが、Google(Gmail)アカウントが必要です。未取得の場合は<a href="https://www.google.com/accounts/NewAccount?hl=ja">こちら</a>から取得して下さい。<br />
+  <p>設定したURLを周期的に叩きに行く、いわゆるweb cronサービスです。<br />
+  無料で使用できますが、Google(Gmail)アカウントが必要です。未取得の方は<a href="https://www.google.com/accounts/NewAccount?hl=ja">こちら</a>から取得して下さい。<br />
   </p>
-  <p>phaさんの<a href="http://pha22.net/twitterbot/">プログラミングができなくても作れるTwitter botの作り方</a>で、cronの設定にはまる人が多いという噂なので、<a href="http://m-hook.appspot.com/gc/">試しに作ってみた</a>のが3日で定員になってしまったので、建て増ししてみました。</p>
+  <p>phaさんの<a href="http://pha22.net/twitterbot/">プログラミングができなくても作れるTwitter botの作り方</a>にて、cronの設定にはまる人が多いという噂を聞いて、簡便に設定出来るサービスがあればと思い、試作したものです。<br />
+  本サービスと同じものを独自に立てることも可能です。詳細は<a href="http://d.hatena.ne.jp/furyu-tei/20100115/gaecronclub">こちらの記事</a>を参照して下さい。
+  </p>
 </div>
 
 <h2>使い方</h2>
@@ -73,17 +75,15 @@
 <ol>
   <li>テスト運用中につき、予告無く使用出来なくなる場合が有ります。</li>
   <li>ご利用は自己責任でお願いします。本サービスの動作および本サービスを使用したことに伴ういかなる弊害についても製作者は責任を負いません。</li>
-  <li>実行時刻の精度には期待しないで下さい。やっつけで作っているので、動作が不安定になる可能性も高いです。</li>
-  <li>現在のところ、ユーザ登録は<span class="counter">先着{{max_user}}名様</span>限定。<br />また、周期設定できるURLは、各ユーザにつき、<span class="counter">{{max_cron}}</span>個までとなっています。
-    <div class="mutter">無料使用時の制限がきついGoogle App Engineではこの程度で限界かも。軽くする方法をご存じの方はご教授下さい。</div>
-  </li>
+  <li>実行時刻の精度には期待しないで下さい。やっつけで作ったものであり、動作が不安定になる可能性も高いです。</li>
+  <li>ユーザ登録は<span class="counter">先着{{max_user}}名様</span>限定。<br />周期設定できるURLは、1ユーザあたり<span class="counter">{{max_cron}}個まで</span>です。</li>
 </ol>
 </div>
 
 
 <h2>登録ユーザ数</h2>
 <div class="container note">
-  現在<span class="counter">{{user_num}}</span>名。{%if remain_user_num %}あと<span class="counter">{{remain_user_num}}</span>名登録可能。{% else %}定員に達しましたので、現在新既登録は出来ません。{% endif %}
+  現在<span class="counter">{{user_num}}名</span>。{%if remain_user_num %}あと<span class="counter">{{remain_user_num}}名</span>登録可能。{% else %}<span class="warning">定員に達しましたので、現在新既登録は出来ません。</a>{% endif %}
     <div class="mutter">定員に達した場合、『<a href="http://gaecronclub.appspot.com/">GAE-Cron Club</a>』を覗いてみてください。空きのあるプロバイダが見つかるかも…？</div>
 </div>
 

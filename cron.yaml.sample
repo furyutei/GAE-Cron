@@ -3,10 +3,6 @@ cron:
   url: /gaetimer/timercycle
   schedule: every 1 minutes
 
-#- description: check and restore timer
-#  url: /check_timer
-#  schedule: every 30 minutes
-
 - description: gaetimer(restore)
   url: /gaetimer/restore
   schedule: every 30 minutes

@@ -8,26 +8,22 @@ Copyright (c) 2010 furyu-tei
 """
 
 __author__ = 'furyutei@gmail.com'
-__version__ = '0.0.2'
+__version__ = '0.0.2a'
 
 import logging,re
 import time,datetime
 import urllib
 import wsgiref.handlers
-import hashlib
+#import hashlib
 
 from google.appengine.ext import db
 from google.appengine.ext import webapp
 from google.appengine.api import urlfetch
 from google.appengine.api import memcache
-from google.appengine.api.labs import taskqueue
+#from google.appengine.api.labs import taskqueue
+from google.appengine.api.taskqueue import taskqueue
 from google.appengine.api.urlfetch import InvalidURLError,DownloadError,ResponseTooLargeError
-
-utcnow = datetime.datetime.utcnow
-timedelta = datetime.timedelta
-
-DB_FETCH_LIMIT = 100000       # max fetch number of datastore
-DB_DELETE_FETCH_LIMIT = 100   # max fetch number of datastore (on delete)
+from google.appengine.api import quota
 
 #{ // user parameters
 
@@ -40,6 +36,8 @@ RPC_WAIT=True                 # True: wait complete of RPC-fetch call (SAVE_CALL
 DEBUG_FLAG = False            # for webapp.WSGIApplication()
 DEBUG_LEVEL = logging.DEBUG   # for logger
 DEBUG = True                  # False: disable log() (wrapper of logging.debug())
+
+REPORT_CPU_TIME = False       # True: report CPU Time
 
 MAX_TIMEOUT_NUM = 20          # max number of asynchronous requests on timercycle()
 MAX_CALL_NUM = 20             # max number of timercycle() called on one cycle (1 by cron.yaml, and max (MAX_CALL_NUM-1) by taskqueue())
@@ -78,6 +76,15 @@ KEY_MAINTENANCE_MODE = 'key_maintenance_mode'
 
 CONTENT_TYPE_PLAIN  ='text/plain; charset=utf-8'
 
+strptime = datetime.datetime.strptime
+utcnow = datetime.datetime.utcnow
+timedelta = datetime.timedelta
+
+ISOFMT = '%Y-%m-%dT%H:%M:%S'
+
+DB_FETCH_LIMIT = 100000       # max fetch number of datastore
+DB_DELETE_FETCH_LIMIT = 100   # max fetch number of datastore (on delete)
+
 #} // end of global variables
 
 
@@ -97,28 +104,36 @@ class dbGaeTimer(db.Expando):
 #} // end of class dbGaeTimer()
 
 
-#{ // def get_db_timer()
-def get_db_timer(timerid):
-  try:
-    timerid=int(timerid)
-  except:
-    if not isinstance(timerid,basestring):
-      logerr(u'Error in get_db_timer(): invalid timerid')
-      return None
-  db_timer=db.get(db.Key.from_path('dbGaeTimer',timerid))
-  return db_timer
-#} // end of def get_db_timer()
+#{ // class clMemTimer()
+class clTimerKey(object):
+  def __init__(self,key_name=u''):
+    self.key_name=key_name
+  def id_or_name(self):
+    return self.key_name
 
-
-#{ // def get_db_timerid()
-def get_db_timerid(db_timer):
-  try:
-    timerid=str(db_timer.key().id_or_name())
-  except Exception, s:
-    logerr(u'Error in get_db_timerid(): cannot get timerid',s)
-    return None
-  return timerid
-#} // end of get_db_timerid()
+class clMemTimer(object):
+  def __init__(self,key_name=u'',minutes=0,crontime=u'',tz_hours=9.0,url=u'',user_id=u'',repeat=True,timeout=None,flg_save=True,update=None,date=None):
+    self.key_name = key_name
+    self.minutes = minutes
+    self.crontime = crontime
+    self.tz_hours = tz_hours
+    self.url = url
+    self.user_id = user_id
+    self.repeat = repeat
+    self.timeout = timeout
+    self.flg_save = flg_save
+    if update:
+      self.update = update
+    else:
+      self.update = utcnow()
+    if date:
+      self.date = date
+    else:
+      self.date = utcnow()
+  
+  def key(self):
+    return clTimerKey(key_name=self.key_name)
+#} // end of class clMemTimer()
 
 
 #{ // def log()
@@ -159,6 +174,120 @@ def logerr(*args):
       except:
         pass
 #} // end of def logerr()
+
+
+#{ // def get_db_timer()
+def get_db_timer(timerid):
+  try:
+    timerid=int(timerid)
+  except:
+    if not isinstance(timerid,basestring):
+      logerr(u'Error in get_db_timer(): invalid timerid')
+      return None
+  db_timer=db.get(db.Key.from_path('dbGaeTimer',timerid))
+  return db_timer
+#} // end of def get_db_timer()
+
+
+#{ // def get_db_timerid()
+def get_db_timerid(db_timer):
+  try:
+    timerid=str(db_timer.key().id_or_name())
+  except Exception, s:
+    logerr(u'Error in get_db_timerid(): cannot get timerid',s)
+    return None
+  return timerid
+#} // end of get_db_timerid()
+
+
+#{ // def datetime_to_isofmt()
+def datetime_to_isofmt(t):
+  try:
+    return t.strftime(ISOFMT)+u'.%06d' % (t.microsecond)
+  except:
+    #t=utcnow()
+    #return t.strftime(ISOFMT)+u'.%06d' % (t.microsecond)
+    return u''
+#} // end of def datetime_to_isofmt()
+
+
+#{ // def isofmt_to_datetime()
+def isofmt_to_datetime(isofmt):
+  if not isofmt:
+    return None
+  try:
+    elms=isofmt.split(u'.')+[u'0']
+    return strptime(elms[0],ISOFMT)+timedelta(microseconds=int(elms[1]))
+  except:
+    #return utcnow()
+    return None
+#} // end of def isofmt_to_datetime()
+
+
+#{ // def pack_db_timer()
+re_marks=re.compile(u'(\u0000|\ufffe|\uffff)')
+def _replace_mark(_str):
+  if isinstance(_str,basestring):
+    _str=re_marks.sub(r'',unicode(_str))
+  else:
+    _str=u''
+  return _str
+
+def pack_db_timer(db_timer):
+  _strs=[]
+  
+  timer_id=get_db_timerid(db_timer)
+  if not timer_id:
+    timer_id=''
+  _strs.append(u'%s' % (timer_id))                             #[0]
+  minutes = db_timer.minutes
+  if not isinstance(minutes,(int,long)):
+    minutes = 0
+  _strs.append(u'%d' % (minutes))                              #[1]
+  tz_hours = db_timer.tz_hours
+  if not isinstance(tz_hours,(int,long,float)):
+    tz_hours = 9.0
+  _strs.append(u'%f' % (tz_hours))                             #[2]
+  _strs.append(u'%s' % (_replace_mark(db_timer.crontime)))     #[3]
+  _strs.append(u'%s' % (_replace_mark(db_timer.url)))          #[4]
+  _strs.append(u'%s' % (_replace_mark(db_timer.user_id)))      #[5]
+  _strs.append(u'%s' % (_replace_mark(db_timer.user_info)))    #[6]
+  _strs.append(u'%d' % (int(db_timer.repeat)))                 #[7]
+  _strs.append(u'%d' % (int(db_timer.flg_save)))               #[8]
+  _strs.append(u'%s' % (datetime_to_isofmt(db_timer.timeout))) #[9]
+  _strs.append(u'%s' % (datetime_to_isofmt(db_timer.update)))  #[10]
+  _strs.append(u'%s' % (datetime_to_isofmt(db_timer.date)))    #[11]
+  
+  db_timer_str=u'\u0000'.join(_strs)
+  
+  return db_timer_str
+#} // enf of def pack_db_timer()
+
+
+#{ // def unpack_db_timer()
+def unpack_db_timer(db_timer_str):
+  _strs=db_timer_str.split(u'\u0000')
+  
+  timer_id=str(_strs[0])
+  if timer_id:
+    db_timer=clMemTimer(key_name=timer_id)
+  else:
+    db_timer=clMemTimer()
+  
+  db_timer.minutes   = int(_strs[1])
+  db_timer.tz_hours  = float(_strs[2])
+  db_timer.crontime  = _strs[3]
+  db_timer.url       = _strs[4]
+  db_timer.user_id   = _strs[5]
+  db_timer.user_info = _strs[6]
+  db_timer.repeat    = bool(int(_strs[7]))
+  db_timer.flg_save  = bool(int(_strs[8]))
+  db_timer.timeout   = isofmt_to_datetime(_strs[9])
+  db_timer.update    = isofmt_to_datetime(_strs[10])
+  db_timer.date      = isofmt_to_datetime(_strs[11])
+  
+  return db_timer
+#} // enf of def pack_db_timer()
 
 
 #{ // def db_put()
@@ -383,6 +512,7 @@ class GAE_Timer(object):
     self.def_timeout_path=def_timeout_path
     self._timer_init()
     self.curtime=utcnow()
+    self.snap_timeout_dict=None
   
   def get_timer_namespace_by_string(self,base_str):
     return self.namespace # dummy
@@ -398,7 +528,7 @@ class GAE_Timer(object):
     try:
       _num=memcache.incr(key=KEY_SEM,initial_value=0,namespace=self.namespace)
       if _num == 1:
-        log('_sem_lock: success (namespace=%s)' % (self.namespace))
+        #log('_sem_lock: success (namespace=%s)' % (self.namespace))
         return True
       else:
         memcache.decr(key=KEY_SEM,namespace=self.namespace)
@@ -424,7 +554,8 @@ class GAE_Timer(object):
     try:
       _num=memcache.decr(key=KEY_SEM,namespace=self.namespace)
       if _num == 0:
-        log('_sem_unlock: success (namespace=%s)' % (self.namespace))
+        #log('_sem_unlock: success (namespace=%s)' % (self.namespace))
+        pass
       else:
         log('_sem_unlock: success (namespace=%s) remain number=%s (temporary conflict with others)' % (self.namespace,str(_num)))
     except Exception, s:
@@ -476,22 +607,24 @@ class GAE_Timer(object):
     
     if timerid:
       if save_after:
-        db_timer=dbGaeTimer(key_name=str(timerid))
+        #db_timer=dbGaeTimer(key_name=str(timerid))
+        db_timer=clMemTimer(key_name=str(timerid))
       else:
         db_timer=get_db_timer(timerid)
         if not db_timer:
-          logerr(u'Error in GAE_Timer().set_timer(): existing timer not found(timerid=%s)' % str(timerid))
-          return None
+          #logerr(u'Error in GAE_Timer().set_timer(): existing timer not found(timerid=%s)' % str(timerid))
+          #return None
+          db_timer=dbGaeTimer(key_name=str(timerid))
     else:
       db_timer=dbGaeTimer()
     
     if crontime:
-      timeout=cron_nexttime(crontime,tz_hours=tz_hours)
+      timeout=cron_nexttime(crontime,tz_hours=tz_hours,lasttime=self.curtime)
       if not timeout:
         logerr(u'Error in GAE_Timer().set_timer(): invalid cron format',crontime)
         return None
     else:
-      if not isinstance(minutes,(int,long)):
+      if not isinstance(minutes,(int,long)) or minutes<1:
         logerr(u'Error in GAE_Timer().set_timer(): invalid timeout minutes',minutes)
         return None
       timeout=self.curtime+timedelta(minutes=minutes)
@@ -503,14 +636,13 @@ class GAE_Timer(object):
     db_timer.user_id=user_id
     db_timer.user_info=user_info
     db_timer.repeat=repeat
+    db_timer.timeout=timeout
     
     if save_after:
       loginfo(u'save after: timer(timerid=%s)' % str(timerid))
       db_timer.flg_save=False
     else:
       db_put(db_timer)
-    
-    db_timer.timeout=timeout
     
     if not timerid:
       timerid=get_db_timerid(db_timer)
@@ -523,11 +655,11 @@ class GAE_Timer(object):
         return None
     
     try:
-      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
-      if not timeout_dict:
-        timeout_dict={}
+      #timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+      timeout_dict=self.get_timeout_dict()
       timeout_dict[timerid]=db_timer
-      memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+      #memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+      self.set_timeout_dict(timeout_dict)
     except Exception, s:
       logerr(u'Error in GAE_Timer().set_timer(): cannot load or save timeout_dict',s)
     
@@ -548,12 +680,12 @@ class GAE_Timer(object):
         return None
     
     try:
-      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
-      if not timeout_dict:
-        timeout_dict={}
+      #timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+      timeout_dict=self.get_timeout_dict()
       if timeout_dict.has_key(timerid):
         del(timeout_dict[timerid])
-      memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+      #memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+      self.set_timeout_dict(timeout_dict)
     except Exception, s:
       logerr(u'Error in GAE_Timer().rel_timer(): cannot load or save timeout_dict',s)
     
@@ -585,9 +717,8 @@ class GAE_Timer(object):
         flg_sem=None
     
     try:
-      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
-      if not timeout_dict:
-        timeout_dict={}
+      #timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+      timeout_dict=self.get_timeout_dict()
     except Exception, s:
       logerr(u'Error in GAE_Timer().get_timeout_list(): cannot load timeout_dict',s)
       timeout_dict={}
@@ -597,36 +728,56 @@ class GAE_Timer(object):
     
     cnt_save=MAX_SAVE_TIMER_PER_CYCLE
     for (timerid,db_timer) in timeout_dict.items():
-      if not db_timer.flg_save and 0<cnt_save:
-        loginfo(u'save timer(timerid=%s)' % get_db_timerid(db_timer))
-        db_timer.flg_save=True
-        db_put(db_timer)
-        cnt_save-=1
-      timeout=db_timer.timeout
       flg_next=False
+      timeout=db_timer.timeout
       if timeout:
-        if timeout<=curtime:
-          if not flg_remain:
-            cnt_entry+=1
-            db_timeout_entries.append(db_timer)
-            if db_timer.repeat:
-              flg_next=True
-            else:
-              db_timer.timeout=None
-            if max_num<=cnt_entry:
-              flg_remain=True
+        while not flg_remain:
+          if curtime<timeout:
+            break
+          if max_num<=cnt_entry:
+            flg_remain=True
+            break
+          cnt_entry+=1
+          db_timeout_entries.append(db_timer)
+          if db_timer.repeat:
+            flg_next=True
+          else:
+            db_timer.timeout=datetime.datetime(datetime.MAXYEAR,1,1,0,0,0,0)
+          break
       else:
         flg_next=True
       
       if flg_next:
         if db_timer.crontime:
-          next_timeout=cron_nexttime(db_timer.crontime,tz_hours=db_timer.tz_hours)
-        else:
+          next_timeout=cron_nexttime(db_timer.crontime,tz_hours=db_timer.tz_hours,lasttime=curtime)
+        elif isinstance(db_timer.minutes,(int,long)) and 0<db_timer.minutes:
           next_timeout=curtime+timedelta(minutes=db_timer.minutes)
+        else:
+          next_timeout=None
         db_timer.timeout=next_timeout
     
+      if not db_timer.flg_save and 0<cnt_save:
+        loginfo(u'save timer(timerid=%s)' % get_db_timerid(db_timer))
+        #db_timer.flg_save=True
+        #db_put(db_timer)
+        db_put(dbGaeTimer(
+          key_name = db_timer.key_name,
+          minutes = db_timer.minutes,
+          crontime = db_timer.crontime,
+          tz_hours = db_timer.tz_hours,
+          url = db_timer.url,
+          user_id = db_timer.user_id,
+          user_info = db_timer.user_info,
+          repeat = db_timer.repeat,
+          timeout = db_timer.timeout,
+          flg_save = db_timer.flg_save,
+        ))
+        db_timer.flg_save=True
+        cnt_save-=1
+    
     try:
-      memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+      #memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+      self.set_timeout_dict(timeout_dict)
     except Exception, s:
       logerr(u'Error in GAE_Timer().get_timeout_list(): cannot save timeout_dict',s)
     
@@ -651,13 +802,12 @@ class GAE_Timer(object):
       try:
         flg_sem=self._sem_lock_retry()
       except Exception, s:
-        logerr(u'Error in GAE_Timer().clear_all_timers(): semaphore lock failure (pattern-B)',s)
+        logerr(u'Error in GAE_Timer().check_and_restore(): semaphore lock failure (pattern-B)',s)
         flg_sem=None
     
     try:
-      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
-      if not timeout_dict:
-        timeout_dict={}
+      #timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+      timeout_dict=self.get_timeout_dict()
     except Exception, s:
       logerr(u'Error in GAE_Timer().check_and_restore(): cannot load timeout_dict',s)
       timeout_dict={}
@@ -674,14 +824,17 @@ class GAE_Timer(object):
       loginfo(u'timer(timerid=%s) not exist in cache' % str(timerid))
       if not db_timer.timeout:
         if db_timer.crontime:
-          next_timeout=cron_nexttime(db_timer.crontime,tz_hours=db_timer.tz_hours)
-        else:
+          next_timeout=cron_nexttime(db_timer.crontime,tz_hours=db_timer.tz_hours,lasttime=curtime)
+        elif isinstance(db_timer.minutes,(int,long)) and 0<db_timer.minutes:
           next_timeout=curtime+timedelta(minutes=db_timer.minutes)
+        else:
+          next_timeout=None
         db_timer.timeout=next_timeout
       timeout_dict[timerid]=db_timer
     
     try:
-      memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+      #memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+      self.set_timeout_dict(timeout_dict)
     except Exception, s:
       logerr(u'Error in GAE_Timer().check_and_restore(): cannot save timeout_dict',s)
     
@@ -750,27 +903,85 @@ class GAE_Timer(object):
     
     self.prn_timer_header(header)
     log(u'count=%d (reverse=%d)' % (cnt,rcnt))
-
-  def save_last_status(self,timerid,last_timeout=u'',last_result=u''):
-    memcache.set(key=KEY_STATUS_BASE+str(timerid),value=dict(last_timeout=last_timeout,last_result=last_result),time=0,namespace=self.namespace)
+  
+  def set_timeout_dict(self,timeout_dict):
+    if REPORT_CPU_TIME: cpu_start = quota.get_request_cpu_usage()
+    #memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+    _list=timeout_dict.items()
+    timeout_dict_str=u'\uffff'.join([u'%s\ufffe%s' % (timerid,pack_db_timer(db_timer)) for (timerid,db_timer) in _list])
+    memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict_str,time=0,namespace=self.namespace)
+    log(u'GAE_Timer().set_timeout_dict(): total number of timers=%d' % (len(_list)))
+    if REPORT_CPU_TIME: cpu_end = quota.get_request_cpu_usage()
+    if REPORT_CPU_TIME: log(u'set_timeout_dict()_string: %d megacycles' % (cpu_end-cpu_start))
+  
+  def get_timeout_dict(self):
+    if REPORT_CPU_TIME: cpu_start = quota.get_request_cpu_usage()
+    timeout_dict_str = memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+    if isinstance(timeout_dict_str,dict):
+      timeout_dict=timeout_dict_str
+    elif not timeout_dict_str:
+      timeout_dict={}
+    else:
+      """
+      #timeout_dict={}
+      #for _str in timeout_dict_str.split(u'\uffff'):
+      #  (timerid,db_timer_str) = _str.split(u'\ufffe')
+      #  timeout_dict[str(timerid)]=unpack_db_timer(db_timer_str)
+      """
+      def list_to_dict(src_list):
+        def pairwise(iterable):
+          itnext = iter(iterable).next
+          while True:
+            yield itnext(),unpack_db_timer(itnext())
+        return dict(pairwise(src_list))
+      _list=re.split(u'\uffff|\ufffe',timeout_dict_str)
+      log(u'GAE_Timer().get_timeout_dict(): total number of timers=%d' % (len(_list)/2))
+      timeout_dict=list_to_dict(_list)
+    if not timeout_dict:
+      timeout_dict={}
+    if REPORT_CPU_TIME: cpu_end = quota.get_request_cpu_usage()
+    if REPORT_CPU_TIME: log(u'get_timeout_dict(): %d megacycles' % (cpu_end-cpu_start))
+    return timeout_dict
+  
+  def set_last_status(self,timerid,last_timeout=u'',last_result=u''):
+    if REPORT_CPU_TIME: cpu_start = quota.get_request_cpu_usage()
+    #memcache.set(key=KEY_STATUS_BASE+str(timerid),value=dict(last_timeout=last_timeout,last_result=last_result),time=0,namespace=self.namespace)
+    memcache.set(key=KEY_STATUS_BASE+str(timerid),value=u'%s\u0000%s' % (last_timeout,last_result),time=0,namespace=self.namespace)
+    if REPORT_CPU_TIME: cpu_end = quota.get_request_cpu_usage()
+    if REPORT_CPU_TIME: log(u'set_last_status(): %d megacycles' % (cpu_end-cpu_start))
   
   def get_last_status(self,timerid):
-    last_status=memcache.get(key=KEY_STATUS_BASE+str(timerid),namespace=self.namespace)
+    if REPORT_CPU_TIME: cpu_start = quota.get_request_cpu_usage()
+    last_status_str=memcache.get(key=KEY_STATUS_BASE+str(timerid),namespace=self.namespace)
+    if isinstance(last_status_str,basestring):
+      (last_timeout,last_result)=last_status_str.split(u'\u0000')
+      last_status = dict(last_timeout=last_timeout,last_result=last_result)
+    else:
+      last_status = last_status_str
     if not last_status:
       last_status=dict(last_timeout=u'',last_result=u'')
+    if REPORT_CPU_TIME: cpu_end = quota.get_request_cpu_usage()
+    if REPORT_CPU_TIME: log(u'get_last_status(): %d megacycles' % (cpu_end-cpu_start))
     return last_status
 
-  def get_next_time(self,timerid,fmt=DEFAULT_DATETIME_FORMAT):
-    try:
-      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
-      if not timeout_dict:
+  def get_next_time(self,timerid,fmt=DEFAULT_DATETIME_FORMAT,use_snapshot=True):
+    if use_snapshot and self.snap_timeout_dict:
+      timeout_dict=self.snap_timeout_dict
+    else:
+      try:
+        #timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+        timeout_dict=self.get_timeout_dict()
+      except Exception, s:
+        logerr(u'Error in GAE_Timer().get_next_time(): cannot load timeout_dict',s)
         timeout_dict={}
-    except Exception, s:
-      logerr(u'Error in GAE_Timer().get_next_time(): cannot load timeout_dict',s)
-      timeout_dict={}
+      self.snap_timeout_dict=timeout_dict
     
     db_timer=timeout_dict.get(timerid)
-    if not db_timer or not db_timer.timeout:
+    if not db_timer:
+      logerr(u'Error in GAE_Timer().get_next_time(): timer not found: id=%s' % (str(timerid)))
+      return u''
+    if not db_timer.timeout:
+      log(u'GAE_Timer().get_next_time(): empty timeout parameter: id=%s' % (str(timerid)))
       return u''
     return (db_timer.timeout+timedelta(hours=DEFAULT_TZ_HOURS)).strftime(fmt)
   
@@ -864,6 +1075,8 @@ class timercycle(webapp.RequestHandler):
       
       (db_timeout_entries,flg_remain)=gae_timer.get_timeout_list(max_num=MAX_TIMEOUT_NUM)
       
+      log(u'  number of timeout entries: %d' % (len(db_timeout_entries)))
+      
       urls={}
       def callback(timerid,result):
         log(u'callback(timerid=%s): "%s"' % (str(timerid),urls[timerid]))
@@ -879,7 +1092,7 @@ class timercycle(webapp.RequestHandler):
               s_result=u'unknown error(1)'
         else:
           s_result=u'unknown error(2)'
-        gae_timer.save_last_status(timerid=timerid,last_timeout=curtime_str,last_result=s_result)
+        gae_timer.set_last_status(timerid=timerid,last_timeout=curtime_str,last_result=s_result)
         log(s_result)
       
       def_url=re_def_url.sub(r'\1',req.url)+gae_timer.get_def_timeout_path()
@@ -900,6 +1113,7 @@ class timercycle(webapp.RequestHandler):
           pass
         break
       
+      log(u'=====')
       rpcs=[]
       for db_timer in db_timeout_entries:
         timerid=get_db_timerid(db_timer)
@@ -919,6 +1133,7 @@ class timercycle(webapp.RequestHandler):
         
         urls[timerid]=url
         log(u'call(timerid=%s): "%s"' % (timerid,url))
+        log(u'-----')
         
         if SAVE_CALLBACK_RESULT:
           rpc=fetch_rpc(url=url,method='GET',params=params,keyid=timerid,callback=callback)
@@ -1131,6 +1346,20 @@ if __name__ == "__main__":
 #==============================================================================
 # 更新履歴
 #==============================================================================
+2011.05.15: version 0.0.2a
+ - パフォーマンス改善のため、memcacheアクセスで、
+     書き込み時：object/dictからunicode文字列に変換
+     読み出し時：unicode文字列からobject/dictへの変換
+   を行なうように改修。
+   ※object/dictの読み書きはunicodeの場合と比較してオーバヘッドが大きい。
+     (object/dict←→unicode変換処理の効率が良い場合、パフォーマンス改善になる)
+     参考：http://d.hatena.ne.jp/furyu-tei/20110511/1305123378
+   ※GAE_Timer()下のset_timeout_dict()、get_timeout_dict()、set_last_status()、
+     get_last_status()が対象。
+   ※db.Expandoはobject作成時の負荷が高いため、memcacheアクセス用に、別途
+     clMemTimerを用意。
+
+
 2010.10.23: version 0.0.2
  - タイマ用の元データをmemcache上に持つのを止め、datastore上に持つように全面改修。
    ※memcacheは前振れなく消えることがあり、データの不整合が発生しやすいため、

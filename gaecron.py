@@ -8,15 +8,23 @@ Copyright (c) 2010 furyu-tei
 """
 
 __author__ = 'furyutei@gmail.com'
-__version__ = '0.0.2'
+__version__ = '0.0.2a'
 
 
 import logging
 import yaml
 import os,cgi,re,urllib
 import time,datetime
-import random,hashlib,hmac,base64,sha
+import random,hashlib
+#import hmac,base64,sha
 import wsgiref.handlers
+
+"""
+# use_library()だと0.96では変わらず警告が出る→appengine_config.pyで対応
+#from google.appengine.dist import use_library
+##use_library('django', '1.2')
+#use_library('django', '0.96')
+"""
 
 from google.appengine.ext import db
 from google.appengine.ext import webapp
@@ -24,13 +32,14 @@ from google.appengine.api import users
 from google.appengine.api import urlfetch
 from google.appengine.api import memcache
 from google.appengine.api import mail
-from google.appengine.api.labs import taskqueue
+#from google.appengine.api.labs import taskqueue
+from google.appengine.api.taskqueue import taskqueue
 from google.appengine.ext.webapp import template
 from google.appengine.ext.webapp.mail_handlers import InboundMailHandler
  
 from django.utils import simplejson
 
-from gaetimer import GAE_Timer,timer_maintenance,timer_initialize,set_maintenance_mode,dbGaeTimer
+from gaetimer import GAE_Timer,timer_maintenance,timer_initialize,set_maintenance_mode
 from gaetimer import fetch_rpc
 
 #{ // option parameters
@@ -53,8 +62,9 @@ PATH_BASE = u''               # 基準となるPATH(u''はルート)
   script: gaecron.py
   
 ■ cron.yaml の cron: 下の設定
+  既存のcron.yamlを使用していて以下の記述が残っている場合、削除またはコメントアウトすること。
 - description: check and restore timer
-  url: /gc/check_timer
+  url: /check_timer
   schedule: every 30 minutes
 
 """
@@ -98,7 +108,7 @@ TEMPLATE_STATUS = u'status.html'
 
 HTML_CREDITS="""
 Presented by <a href="%(diary)s/"><img src="%(image)s/profile_s.gif" border="0" border="0" />風柳</a>
-【<a href="%(diary)s/20100115/gaecron">関連記事</a>】
+【<a href="%(diary)s/20100115/gaecronclub">関連記事</a>】
 <a href="http://code.google.com/intl/ja/appengine/"><img src="%(image)s/appengine-noborder-120x30.gif" alt="Powered by Google App Engine" title="Powered by Google App Engine" border="0" /></a>
 """ % {'image':PATH_IMAGE,'diary':PATH_DIARY_BASE}
 
@@ -730,11 +740,12 @@ class userpage(webapp.RequestHandler):
     class_name = ['even','odd']
     _noresult = u'(-)'
     
+    gae_timer=GAE_Timer()
     def _get_last_status(cron_info):
       _valid = cron_info['valid']
       tid = cron_info['tid']
       
-      gae_timer=GAE_Timer()
+      #gae_timer=GAE_Timer()
       
       if 0<_valid and tid:
         #last_status = get_last_status(timerid=tid)
@@ -823,14 +834,15 @@ class userpage(webapp.RequestHandler):
           logerr('authkey failure: %s vs %s' % (req.get('authkey',u''),authkey))
           break
         cron_info_dict = simplejson.loads(db_gc.croninfo)
-        dbDelete(db_gc)
-        gae_timer = GAE_Timer()
+        #dbDelete(db_gc)
+        #gae_timer = GAE_Timer()
         rel_timer = gae_timer.rel_timer
         for cron_info in cron_info_dict.values():
           tid = cron_info.get('tid')
           if tid:
             rel_timer(tid)
-              
+        
+        dbDelete(db_gc)
         log(u'### unregister %s' % (user.email()))
         reportServiceInfos()
         status_code=204
@@ -861,6 +873,7 @@ class userpage(webapp.RequestHandler):
           if db_gc:
             flg_create = True
             log(u'### register %s' % (user.email()))
+        
         if not db_gc:
           status_code = 503
           break
@@ -870,11 +883,11 @@ class userpage(webapp.RequestHandler):
         
         cron_info_dict = simplejson.loads(db_gc.croninfo)
         
-        gae_timer = GAE_Timer()
+        #gae_timer = GAE_Timer()
         set_timer = gae_timer.set_timer
         rel_timer = gae_timer.rel_timer
         
-        no = req.get('no')
+        no = req.get('no','0')
         cron_info = cron_info_dict.get(no)
         if cron_info:
           tid = cron_info.get('tid')
@@ -904,15 +917,18 @@ class userpage(webapp.RequestHandler):
         except:
           _tz_hours = 9
         
-        _tid = None
+        #_tid = None
         if 0<_valid:
+          _tid=u'%s-%s-%s' % (NAMESPACE,str(db_gc.key().id()),str(no))
           if _kind == 'cycle':
-            _tid = set_timer(minutes=_cycle,url=_url,user_id=db_gc.email,user_info=no)
+            _tid = set_timer(minutes=_cycle,url=_url,user_id=db_gc.email,user_info=no,timerid=_tid)
           else:
             _crontime = ' '.join([_min,_hour,_day,_month,_wday])
-            _tid = set_timer(crontime=_crontime,url=_url,user_id=db_gc.email,user_info=no,tz_hours=_tz_hours)
+            _tid = set_timer(crontime=_crontime,url=_url,user_id=db_gc.email,user_info=no,tz_hours=_tz_hours,timerid=_tid)
           if not _tid:
             _valid = 0
+        else:
+          _tid = None
         
         cron_info = cron_info_dict[no]=dict(
           url=_url,
@@ -1052,143 +1068,152 @@ class checkTimer(webapp.RequestHandler):
     
     rsp.set_status(200)
     loginfo(pre_str+u'start')
-    
-    max_num = MAX_RESTORE_NUM_PER_CYCLE
-    last_id = req.get('last_id')
-    if not last_id:
-      db_gc_list = dbGaeCronUser.all().order('date').fetch(max_num)
-      cnt = 0
-      tcnt = 0
-    else:
-      last_time = isofmt_to_datetime(req.get('last_time'))
-      log(' last_id=%s' % (last_id))
-      log(' last_time=%s' % (req.get('last_time')))
-      db_gc_list = dbGaeCronUser.all().filter('date >=', last_time).order('date').fetch(max_num)
-      cnt = int(req.get('cnt'),0)
-      tcnt = int(req.get('tcnt'),0)
-    
-    timer_maintenance()
-    
-    for db_gc in db_gc_list:
-      db_gc_id = str(db_gc.key().id())
-      if db_gc_id == last_id:
-        continue
-      
-      cnt += 1
-      email = db_gc.email
-      loginfo(u'%d: %s  %s' % (cnt,email,db_gc.date))
-      
-      flg_update = False
-      cron_info_dict = simplejson.loads(db_gc.croninfo)
-      gae_timer = GAE_Timer()
-      set_timer = gae_timer.set_timer
-      rel_timer = gae_timer.rel_timer
-      for (no,cron_info) in cron_info_dict.items():
-      
-        flg_set = False
-        flg_rel_comp = False
-        
-        timer = None
-        tid = cron_info['tid']
-        
-        if tid:
-          gae_timer.rel_timer(tid)
-          flg_rel_comp = True
-          flg_set = True
-          
-        if cron_info['valid']==0:
-          if timer:
-            if not flg_rel_comp:
-              rel_timer(tid)
-            cron_info['tid'] = None
-            flg_update = True
-          continue
-        
-        _url = cron_info['url']
-        if cron_info['kind'] == 'cycle':
-          _cycle = cron_info['cycle_info']['cycle']
-          _crontime = None
-        else:
-          _cycle = None
-          _c = cron_info['cron_info']
-          _crontime = ' '.join([_c['min'],_c['hour'],_c['day'],_c['month'],_c['wday']])
-        
-        while True:
-          if not timer:
-            flg_set = True
-            break
-          
-          if timer.user_id != email or timer.user_info != no:
-            # perhaps BUG
-            break
-          
-          if timer.url != _url:
-            flg_set = True
-            break
-          
-          if _cycle:
-            if timer.minutes != _cycle:
-              flg_set = True
-              break
-          else:
-            if timer.crontime != _crontime:
-              flg_set = True
-              break
-          break
-        
-        if not flg_set:
-          continue
-        
-        tvalue = None
-        if timer:
-          if flg_rel_comp:
-            tvalue = timer.timeout
-          else:
-            rel_timer(tid)
-        
-        if _cycle:
-          tid = set_timer(minutes=_cycle,url=_url,user_id=email,user_info=no,tvalue=tvalue)
-        else:
-          tid = set_timer(crontime=_crontime,url=_url,user_id=email,user_info=no,tz_hours=_c['tz_hours'],tvalue=tvalue)
-        
-        if tid:
-          tcnt += 1
-          loginfo(u'  timer(No.%d) update (timerid=%s)' % (1+int(no),tid))
-        else:
-          cron_info['valid'] = 0
-          logerr(u'  timer(No.%d) set error' % (1+int(no)))
-        
-        cron_info['tid'] = tid
-        
-        flg_update = True
-      
-      if flg_update:
-        db_gc.croninfo = db.Text(simplejson.dumps(cron_info_dict))
-        dbPut(db_gc)
-        logerr(u' => update user datastore')
-      else:
-        log(u' => no update')
-      
-      last_id = db_gc_id
-      last_time = db_gc.date
-    
-    if max_num<=len(db_gc_list):
-      str_rsp = pre_str+u'continue'
-      url=PATH_CHECK_TIMER+'?last_id=%s&last_time=%s&cnt=%d&tcnt=%d' % (urllib.quote(last_id),urllib.quote(datetime_to_isofmt(last_time)),cnt,tcnt)
-      log(u'call:"%s"' % (url))
-      for ci in range(3):
-        try:
-          taskqueue.add(url=url,method='GET',headers={'X-AppEngine-TaskRetryCount':0})
-          break
-        except Exception, s:
-          str_rsp = pre_str+u'taskqueue error: %s' % (str(s))
-          pass
-        time.sleep(1)
-    else:
-      str_rsp = pre_str+u'end'
-      log('set timer (success) number=%d' % (tcnt))
-      reportServiceInfos()
-    
+    """
+    #max_num = MAX_RESTORE_NUM_PER_CYCLE
+    #last_id = req.get('last_id')
+    #if not last_id:
+    #  db_gc_list = dbGaeCronUser.all().order('date').fetch(max_num)
+    #  cnt = 0
+    #  tcnt = 0
+    #else:
+    #  last_time = isofmt_to_datetime(req.get('last_time'))
+    #  log(' last_id=%s' % (last_id))
+    #  log(' last_time=%s' % (req.get('last_time')))
+    #  db_gc_list = dbGaeCronUser.all().filter('date >=', last_time).order('date').fetch(max_num)
+    #  cnt = int(req.get('cnt'),0)
+    #  tcnt = int(req.get('tcnt'),0)
+    #
+    #timer_maintenance()
+    #
+    #gae_timer = GAE_Timer()
+    #set_timer = gae_timer.set_timer
+    #rel_timer = gae_timer.rel_timer
+    #
+    #for db_gc in db_gc_list:
+    #  db_gc_id = str(db_gc.key().id())
+    #  if db_gc_id == last_id:
+    #    continue
+    #  
+    #  cnt += 1
+    #  email = db_gc.email
+    #  loginfo(u'%d: %s  %s' % (cnt,email,db_gc.date))
+    #  
+    #  flg_update = False
+    #  cron_info_dict = simplejson.loads(db_gc.croninfo)
+    #  
+    #  #gae_timer = GAE_Timer()
+    #  #set_timer = gae_timer.set_timer
+    #  #rel_timer = gae_timer.rel_timer
+    #  
+    #  for (no,cron_info) in cron_info_dict.items():
+    #  
+    #    flg_set = False
+    #    flg_rel_comp = False
+    #    
+    #    timer = None
+    #    tid = cron_info['tid']
+    #    
+    #    if tid:
+    #      gae_timer.rel_timer(tid)
+    #      flg_rel_comp = True
+    #      flg_set = True
+    #      
+    #    if cron_info['valid']==0:
+    #      if timer:
+    #        if not flg_rel_comp:
+    #          rel_timer(tid)
+    #        cron_info['tid'] = None
+    #        flg_update = True
+    #      continue
+    #    
+    #    _url = cron_info['url']
+    #    if cron_info['kind'] == 'cycle':
+    #      _cycle = cron_info['cycle_info']['cycle']
+    #      _crontime = None
+    #    else:
+    #      _cycle = None
+    #      _c = cron_info['cron_info']
+    #      _crontime = ' '.join([_c['min'],_c['hour'],_c['day'],_c['month'],_c['wday']])
+    #    
+    #    while True:
+    #      if not timer:
+    #        flg_set = True
+    #        break
+    #      
+    #      if timer.user_id != email or timer.user_info != no:
+    #        # perhaps BUG
+    #        break
+    #      
+    #      if timer.url != _url:
+    #        flg_set = True
+    #        break
+    #      
+    #      if _cycle:
+    #        if timer.minutes != _cycle:
+    #          flg_set = True
+    #          break
+    #      else:
+    #        if timer.crontime != _crontime:
+    #          flg_set = True
+    #          break
+    #      break
+    #    
+    #    if not flg_set:
+    #      continue
+    #    
+    #    tvalue = None
+    #    if timer:
+    #      if flg_rel_comp:
+    #        tvalue = timer.timeout
+    #      else:
+    #        rel_timer(tid)
+    #    
+    #    if _cycle:
+    #      tid = set_timer(minutes=_cycle,url=_url,user_id=email,user_info=no,tvalue=tvalue)
+    #    else:
+    #      tid = set_timer(crontime=_crontime,url=_url,user_id=email,user_info=no,tz_hours=_c['tz_hours'],tvalue=tvalue)
+    #    
+    #    if tid:
+    #      tcnt += 1
+    #      loginfo(u'  timer(No.%d) update (timerid=%s)' % (1+int(no),tid))
+    #    else:
+    #      cron_info['valid'] = 0
+    #      logerr(u'  timer(No.%d) set error' % (1+int(no)))
+    #    
+    #    cron_info['tid'] = tid
+    #    
+    #    flg_update = True
+    #  
+    #  if flg_update:
+    #    db_gc.croninfo = db.Text(simplejson.dumps(cron_info_dict))
+    #    dbPut(db_gc)
+    #    logerr(u' => update user datastore')
+    #  else:
+    #    log(u' => no update')
+    #  
+    #  last_id = db_gc_id
+    #  last_time = db_gc.date
+    #
+    #if max_num<=len(db_gc_list):
+    #  str_rsp = pre_str+u'continue'
+    #  url=PATH_CHECK_TIMER+'?last_id=%s&last_time=%s&cnt=%d&tcnt=%d' % (urllib.quote(last_id),urllib.quote(datetime_to_isofmt(last_time)),cnt,tcnt)
+    #  log(u'call:"%s"' % (url))
+    #  for ci in range(3):
+    #    try:
+    #      taskqueue.add(url=url,method='GET',headers={'X-AppEngine-TaskRetryCount':0})
+    #      break
+    #    except Exception, s:
+    #      str_rsp = pre_str+u'taskqueue error: %s' % (str(s))
+    #      pass
+    #    time.sleep(1)
+    #else:
+    #  str_rsp = pre_str+u'end'
+    #  log('set timer (success) number=%d' % (tcnt))
+    #  reportServiceInfos()
+    #
+    #loginfo(str_rsp)
+    """
+    str_rsp=pre_str+u'/check_timerは廃止され、機能は/gaetimer/restoreに移行されました。cron.yamlの設定を変更して下さい。'
     loginfo(str_rsp)
     rsp.headers['Content-Type'] = CONTENT_TYPE_PLAIN
     rsp.out.write(str_rsp)
@@ -1223,6 +1248,10 @@ class restoreTimer(webapp.RequestHandler):
       cnt = int(req.get('cnt'),0)
       tcnt = int(req.get('tcnt'),0)
     
+    gae_timer = GAE_Timer()
+    set_timer = gae_timer.set_timer
+    rel_timer = gae_timer.rel_timer
+    
     for db_gc in db_gc_list:
       db_gc_id = str(db_gc.key().id())
       if db_gc_id == last_id:
@@ -1234,9 +1263,9 @@ class restoreTimer(webapp.RequestHandler):
       
       cron_info_dict = simplejson.loads(db_gc.croninfo)
       
-      gae_timer = GAE_Timer()
-      set_timer = gae_timer.set_timer
-      rel_timer = gae_timer.rel_timer
+      #gae_timer = GAE_Timer()
+      #set_timer = gae_timer.set_timer
+      #rel_timer = gae_timer.rel_timer
       
       for (no,cron_info) in cron_info_dict.items():
         tid = None
@@ -1311,7 +1340,8 @@ class requestServiceInfo(webapp.RequestHandler):
       prn_html(self,status_code=404)
       return
     
-    app_id = os.environ.get('APPLICATION_ID',u'')
+    #app_id = os.environ.get('APPLICATION_ID',u'')
+    app_id = re.sub(u'^.+?~',r'',os.environ.get('APPLICATION_ID',u'')) # remove 's~' prefix
     #mail_id = str(memcache.incr(key='gaecounter',initial_value=0))
     mail_id = str(memcache.incr(key='gaecounter',initial_value=0,namespace=NAMESPACE))
     
@@ -1415,13 +1445,14 @@ class startReport(InboundMailHandler):
       return
     
     club_url = re.sub(u'/[^/]+$',r'/',dest_url)
+    app_id = re.sub(u'^.+?~',r'',os.environ.get('APPLICATION_ID',u'')) # remove 's~' prefix
     try:
       # from_address が管理者のものであれば、正常に送信出来る。それ以外はエラーとなる。
       mail.send_mail(
        sender = from_address,
        to = from_address,
        subject = u'GAE-Cron Report',
-       body = u'Application ID "%(appid)s" (%(appid)s.appspot.com) 上の GAE-Cron を GAE-Cron Club\n%(club_url)s\nに登録します。\n' % dict(appid=os.environ.get('APPLICATION_ID',u''),club_url=club_url)
+       body = u'Application ID "%(app_id)s" (%(app_id)s.appspot.com) 上の GAE-Cron を GAE-Cron Club\n%(club_url)s\nに登録します。\n' % dict(app_id=app_id,club_url=club_url)
        #html = json,
       )
     except Exception, s:
@@ -1519,6 +1550,19 @@ if __name__ == "__main__":
 #==============================================================================
 # 更新履歴
 #==============================================================================
+2011.05.15: version 0.0.2a
+ - 使用するDjangoのバージョンを明示(appengine_config.py)。
+ 
+ - GAE_Timer()を冗長に呼んでいた箇所があったのを修正。
+ 
+ - ユーザの登録を削除した際、タイマが残ってしまうことがある不具合の修正。
+ 
+ - templateの文言など修正(gcc-top.html、gc-user-header.html)
+ 
+ - appidに"s~"が付く場合があるのに対応。
+   参考：http://d.hatena.ne.jp/furyu-tei/20110515/1305386911
+
+
 2010.10.23: version 0.0.2
  - gaetimer.pyの仕様変更に伴う改修。
  
@@ -1539,7 +1583,7 @@ if __name__ == "__main__":
 
 2010.05.21: version 0.0.1c
  - タイマ設定／解放時に GAE_Timer 引数に namespace を指定するように修正。
-   ※負荷が軽減目的（セマフォ制御が namespace 毎になる）。
+   ※負荷軽減目的（セマフォ制御が namespace 毎になる）。
  
  - restoreTimer()コール用に、管理者の画面右上部に[全タイマ再設定]ボタンを追加。
    ※全登録者の有効なタイマがすべて再設定される。
