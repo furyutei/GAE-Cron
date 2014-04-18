@@ -8,7 +8,7 @@ Copyright (c) 2010 furyu-tei
 """
 
 __author__ = 'furyutei@gmail.com'
-__version__ = '0.0.1f'
+__version__ = '0.0.2'
 
 import logging,re
 import time,datetime
@@ -16,6 +16,7 @@ import urllib
 import wsgiref.handlers
 import hashlib
 
+from google.appengine.ext import db
 from google.appengine.ext import webapp
 from google.appengine.api import urlfetch
 from google.appengine.api import memcache
@@ -24,71 +25,100 @@ from google.appengine.api.urlfetch import InvalidURLError,DownloadError,Response
 
 utcnow = datetime.datetime.utcnow
 timedelta = datetime.timedelta
-md5 = hashlib.md5
+
+DB_FETCH_LIMIT = 100000       # max fetch number of datastore
+DB_DELETE_FETCH_LIMIT = 100   # max fetch number of datastore (on delete)
 
 #{ // user parameters
 
 PATH_BASE = u'/gaetimer%s'
 
-# [2010/10/19] RPC_WAIT=False => True (GAEの仕様変更なのか、rpc.wait()しないとcallbackがされなくなったため)
-#RPC_WAIT=False              # True: wait complete of RPC-fetch call
-RPC_WAIT=True               # True: wait complete of RPC-fetch call
-SAVE_CALLBACK_RESULT = True # True: save results of RPC-fetch call to memory-cache
+SAVE_CALLBACK_RESULT = True   # True: save results of RPC-fetch call to memory-cache
+RPC_WAIT=True                 # True: wait complete of RPC-fetch call (SAVE_CALLBACK_RESULT=True時は必ずTrueとすること)
+# ※ GAEの仕様変更により、rpc.wait()しないと、callbackが呼ばれない
 
-DEBUG_FLAG = False          # for webapp.WSGIApplication()
-DEBUG_LEVEL = logging.DEBUG # for logger
-DEBUG = True                # False: disable log() (wrapper of logging.debug())
+DEBUG_FLAG = False            # for webapp.WSGIApplication()
+DEBUG_LEVEL = logging.DEBUG   # for logger
+DEBUG = True                  # False: disable log() (wrapper of logging.debug())
 
-MAX_TIMEOUT_NUM = 20        # max number of asynchronous requests on timercycle()
-MAX_CALL_NUM = 10           # max number of timercycle() called on one cycle (1 by cron.yaml, and max (MAX_CALL_NUM-1) by taskqueue())
-MAX_TIMER_TASK_NUMBER = 10  # max number of timercycle() called by cron(1 by cron.yaml, and max (MAX_TIMER_TASK_NUMBER-1) by taskqueue())
+MAX_TIMEOUT_NUM = 20          # max number of asynchronous requests on timercycle()
+MAX_CALL_NUM = 20             # max number of timercycle() called on one cycle (1 by cron.yaml, and max (MAX_CALL_NUM-1) by taskqueue())
+MAX_SAVE_TIMER_PER_CYCLE = 30 # number to save db_timer per timercycle
 
-MAX_RETRY_SEM_LOCK = 3      # max retry number of semaphore lock
-INTV_RETRY_SEM_LOCK = 1     # wait for semaphore lock retry (sec)
+MAX_RETRY_SEM_LOCK = 30       # max retry number of semaphore lock
+INTV_RETRY_SEM_LOCK = 0.1     # wait for semaphore lock retry (sec)
 
-DEFAULT_TZ_HOURS = +9       # timezone(hours) (UTC+DEFAULT_TZ_HOURS, JST=+9)
+DEFAULT_TZ_HOURS = +9.0       # timezone(hours) (UTC+DEFAULT_TZ_HOURS, JST=+9)
 DEFAULT_DATETIME_FORMAT = '%Y/%m/%d %H:%M(JST)'
+                              # 時刻表示用フォーマット
 
 #} // end of user parameters
 
 
 #{ // global variables
 
-PATH_CYCLE = PATH_BASE % (u'/timercycle')
-PATH_SHOWLIST = PATH_BASE % (u'/list')
-PATH_SHOWLIST2 = PATH_BASE % (u'/list2')
-PATH_SHOWCOUNTER = PATH_BASE % (u'/counter')
-PATH_RESTORE = PATH_BASE % (u'/restore')
-PATH_CLEARALL = PATH_BASE % (u'/clearall')
+PATH_CYCLE           = PATH_BASE % (u'/timercycle')
+PATH_SHOWLIST        = PATH_BASE % (u'/list')
+PATH_SHOWLIST_SHORT  = PATH_BASE % (u'/list_short')
+PATH_SHOWCOUNTER     = PATH_BASE % (u'/counter')
+PATH_RESTORE         = PATH_BASE % (u'/restore')
+PATH_CLEARALL        = PATH_BASE % (u'/clearall')
+PATH_SET_TIMER       = PATH_BASE % (u'/settimer')
+PATH_REL_TIMER       = PATH_BASE % (u'/reltimer')
 PATH_DEFAULT_TIMEOUT = PATH_BASE % (u'/timeout') # for test
 
 TIMER_NAMESPACE_BASE = 'gae_timer'
 TIMER_NAMESPACE_DEFAULT = TIMER_NAMESPACE_BASE
 
-TIMER_NAMESPACE_2ND_BASE = 'gae_timer_2nd'
-TIMER_NAMESPACE_2ND_DEFAULT = TIMER_NAMESPACE_2ND_BASE
-
-TIMER_NAMESPACE_NEWEST_BASE = TIMER_NAMESPACE_2ND_BASE
-TIMER_NAMESPACE_NEWEST_DEFAULT = TIMER_NAMESPACE_2ND_DEFAULT
-
-KEY_SEM = 'key_semaphore'
-KEY_THD = 'key_timer_header'
-KEY_TID = 'key_timer_id'
-KEY_TIMER_MAP = 'key_timer_map'
-KEY_RESET_TIMERS = 'key_reset_timers'
-KEY_STATUS_BASE = 'key_status_'
-
-KEY_SEM_2ND = 'key_semaphore_2nd'
-KEY_TIMER_MAP_2ND = 'key_timer_map_2nd'
-KEY_TID_2ND = 'key_timer_id_2nd'
-KEY_RESET_TIMERS_2ND = 'key_reset_timers_2nd'
-KEY_STATUS_2ND_BASE = 'key_status_2nd_'
-
+KEY_SEM              = 'key_semaphore'
+KEY_TID              = 'key_timer_id'
+KEY_STATUS_BASE      = 'key_status_'
+KEY_TIMEOUT_DICT     = 'key_timeout_dict'
 KEY_MAINTENANCE_MODE = 'key_maintenance_mode'
 
 CONTENT_TYPE_PLAIN  ='text/plain; charset=utf-8'
 
 #} // end of global variables
+
+
+#{ // class dbGaeTimer()
+class dbGaeTimer(db.Expando):
+  minutes=db.IntegerProperty(default=0)
+  crontime=db.StringProperty()
+  tz_hours=db.FloatProperty(default=DEFAULT_TZ_HOURS)
+  url=db.StringProperty()
+  user_id=db.StringProperty()
+  user_info=db.StringProperty()
+  repeat=db.BooleanProperty(default=True)
+  timeout=db.DateTimeProperty(default=None)
+  flg_save=db.BooleanProperty(default=True)
+  update=db.DateTimeProperty(auto_now=True)
+  date=db.DateTimeProperty(auto_now_add=True)
+#} // end of class dbGaeTimer()
+
+
+#{ // def get_db_timer()
+def get_db_timer(timerid):
+  try:
+    timerid=int(timerid)
+  except:
+    if not isinstance(timerid,basestring):
+      logerr(u'Error in get_db_timer(): invalid timerid')
+      return None
+  db_timer=db.get(db.Key.from_path('dbGaeTimer',timerid))
+  return db_timer
+#} // end of def get_db_timer()
+
+
+#{ // def get_db_timerid()
+def get_db_timerid(db_timer):
+  try:
+    timerid=str(db_timer.key().id_or_name())
+  except Exception, s:
+    logerr(u'Error in get_db_timerid(): cannot get timerid',s)
+    return None
+  return timerid
+#} // end of get_db_timerid()
 
 
 #{ // def log()
@@ -131,6 +161,30 @@ def logerr(*args):
 #} // end of def logerr()
 
 
+#{ // def db_put()
+def db_put(item,retry=2):
+  for ci in range(retry):
+    try:
+      db.put(item)
+      break
+    except Exception, s:
+      logerr(u'Error in db_put():',s)
+      time.sleep(0.1)
+#} // end of db_put()
+
+
+#{ // def db_delete()
+def db_delete(items,retry=2):
+  for ci in range(retry):
+    try:
+      db.delete(items)
+      break
+    except Exception, s:
+      logerr(u'Error in db_delete():',s)
+      time.sleep(0.1)
+#} // end of db_delete()
+
+
 #{ // def quote_param()
 def quote_param(param):
   if not isinstance(param, basestring):
@@ -165,26 +219,26 @@ def fetch_rpc(url,method=u'GET',headers=None,params=None,payload=None,keyid=None
     pairs=[]
     for key in sorted(params.keys()):
       pairs.append(u'%s=%s' % (quote_param(key),quote_param(params[key])))
-    payload = u'&'.join(pairs)
+    payload=u'&'.join(pairs)
   
   if payload:
     if method=='POST':
-      headers['Content-Type'] = 'application/x-www-form-urlencoded'
+      headers['Content-Type']='application/x-www-form-urlencoded'
     else:
-      url = u'%s?%s' % (url,payload)
-      payload = None
+      url=u'%s?%s' % (url,payload)
+      payload=None
   
   try:
-    url = str(url)
-  except:
-    logerr(u'URL error: %s' % (url))
+    url=str(url)
+  except Exception, s:
+    logerr(u'Error in fetch_rpc(): invalid URL "%s"' % (url),s)
     if callback:
       callback(keyid,u'URL error')
     return None
   
-  rpc = urlfetch.create_rpc(deadline=10)
+  rpc=urlfetch.create_rpc(deadline=10)
   if callback:
-    rpc.callback = lambda:handle_result(rpc)
+    rpc.callback=lambda:handle_result(rpc)
   
   urlfetch.make_fetch_call(rpc=rpc, url=url, method=method, headers=headers, payload=payload)
   
@@ -192,41 +246,22 @@ def fetch_rpc(url,method=u'GET',headers=None,params=None,payload=None,keyid=None
 #} // end of def fetch_rpc()
 
 
-#{ // def get_namespace_version()
-re_ns_first = re.compile(u'^%s\d*$' % (TIMER_NAMESPACE_BASE))
-re_ns_second = re.compile(u'^%s\d*$' % (TIMER_NAMESPACE_2ND_BASE))
-def get_namespace_version(namespace):
-  ver = '0'
-  while True:
-    if not isinstance(namespace,basestring):
-      break
-    if re_ns_second.search(namespace):
-      ver = '2'
-      break
-    if re_ns_first.search(namespace):
-      ver = '1'
-      break
-    break
-  return ver
-#} // end of def get_namespace_version()
-
-
 #{ // def cron_getrange()
-re_asta_sla = re.compile(u'^\*/(\d+)$')
-re_hyphen = re.compile(u'^(\d+)-(\d+)')
+re_asta_sla=re.compile(u'^\*/(\d+)$')
+re_hyphen=re.compile(u'^(\d+)-(\d+)')
 def cron_getrange(field,min,max):
   if field=='*':
     return range(min,1+max)
-  mrslt = re_asta_sla.search(field)
+  mrslt=re_asta_sla.search(field)
   if mrslt:
-    _step = int(mrslt.group(1))
+    _step=int(mrslt.group(1))
     if 0<_step:
       return range(min,1+max,_step)
     else:
       return []
   
   def _getrange(elm):
-    mrslt = re_hyphen.search(elm)
+    mrslt=re_hyphen.search(elm)
     if not mrslt:
       try:
         return [int(elm)]
@@ -255,27 +290,27 @@ def cron_getrange(field,min,max):
 
 
 #{ // def cron_nexttime()
-re_chop_space = re.compile(u'^\s+|\s+$')
-re_space = re.compile(u'\s+')
+re_chop_space=re.compile(u'^\s+|\s+$')
+re_space=re.compile(u'\s+')
 def cron_nexttime(crontime,tz_hours=DEFAULT_TZ_HOURS,lasttime=None):
   if not isinstance(crontime,basestring): return None
   
-  fs = re_space.split(re_chop_space.sub(r'',crontime))
+  fs=re_space.split(re_chop_space.sub(r'',crontime))
   if len(fs)!=5: return None
   
-  rmin = cron_getrange(fs[0],0,59)
+  rmin=cron_getrange(fs[0],0,59)
   if len(rmin)<=0: return None
   
-  rhour = cron_getrange(fs[1],0,23)
+  rhour=cron_getrange(fs[1],0,23)
   if len(rhour)<=0: return None
   
-  rday = cron_getrange(fs[2],1,31)
+  rday=cron_getrange(fs[2],1,31)
   if len(rday)<=0: return None
   
-  rmonth = cron_getrange(fs[3],1,12)
+  rmonth=cron_getrange(fs[3],1,12)
   if len(rmonth)<=0: return None
   
-  rwday = cron_getrange(fs[4],0,7)
+  rwday=cron_getrange(fs[4],0,7)
   if len(rwday)<=0: return None
   # 0(Sunday) => 7(Sunday) for isoweekday()
   if rwday[0] == 0:
@@ -284,48 +319,48 @@ def cron_nexttime(crontime,tz_hours=DEFAULT_TZ_HOURS,lasttime=None):
       rwday.append(7)
   
   if not lasttime:
-    lasttime = utcnow()
+    lasttime=utcnow()
   
-  dt = lasttime + timedelta(hours=tz_hours)
+  dt=lasttime+timedelta(hours=tz_hours)
   
-  tmin = dt.minute
-  dmin = None
+  tmin=dt.minute
+  dmin=None
   for _min in rmin:
     if tmin < _min:
-      dmin = _min - tmin
+      dmin=_min-tmin
       break
   if dmin == None:
-    dmin = 60 + rmin[0] - tmin
+    dmin=60+rmin[0]-tmin
   
-  dt = dt + timedelta(minutes=dmin)
+  dt=dt+timedelta(minutes=dmin)
   
-  thour = dt.hour
-  dhour = None
+  thour=dt.hour
+  dhour=None
   for _hour in rhour:
     if thour <= _hour:
-      dhour = _hour - thour
+      dhour=_hour-thour
       break
   if dhour == None:
-    dhour = 24 + rhour[0] - thour
+    dhour=24+rhour[0]-thour
   
-  dt = dt + timedelta(hours=dhour)
+  dt=dt+timedelta(hours=dhour)
   
-  day_or_wday = False
+  day_or_wday=False
   if fs[2]!='*' and fs[4]!='*':
-    day_or_wday = True
+    day_or_wday=True
   for ci in range(366):
-    (tmonth,tday,twday) = (dt.month,dt.day,dt.isoweekday())
+    (tmonth,tday,twday)=(dt.month,dt.day,dt.isoweekday())
     if tmonth in rmonth:
       if day_or_wday and ((tday in rday) or (twday in rwday)):
         break
       elif (tday in rday) and (twday in rwday):
         break
-    dt = dt + timedelta(days=1)
+    dt=dt+timedelta(days=1)
   
   if 365<=ci:
     return None
   
-  dt = dt - timedelta(hours=tz_hours,seconds=dt.second,microseconds=dt.microsecond)
+  dt=dt-timedelta(hours=tz_hours,seconds=dt.second,microseconds=dt.microsecond)
   
   return dt
 #} // end of def cron_nexttime()
@@ -334,63 +369,26 @@ def cron_nexttime(crontime,tz_hours=DEFAULT_TZ_HOURS,lasttime=None):
 #{ // class SemaphoreError()
 class SemaphoreError(Exception):
   def __init__(self,value):
-    self.value = value
+    self.value=value
   
   def __str__(self):
     return self.value
 #} // end of class SemaphoreError()
 
 
-#{ // class DuplicateTimerError()
-class DuplicateTimerError(Exception):
-  def __init__(self,value):
-    self.value = value
-  
-  def __str__(self):
-    return self.value
-#} // end of class DuplicateTimerError()
-
-
-#{ // class GAE_Timer1st()
-class TIMER_HEADER(object):
-  def __init__(self):
-    self.first = None
-    self.last = None
-    self.count = 0
-    self.count_set = 0
-    self.count_reset = 0
-    self.count_release = 0
-    self.count_timeout = 0
-
-class TIMER_INFO(object):
-  def __init__(self):
-    self.timerid = None
-    self.prev = None
-    self.next = None
-    self.minutes = None
-    self.crontime = None
-    self.tz_hours = None
-    self.timeout = None
-    self.url = None
-    self.user_id = None
-    self.user_info = None
-    self.repeat = False
-
-class GAE_Timer1st(object):
+#{ // class GAE_Timer()
+class GAE_Timer(object):
   def __init__(self,init=None,namespace=TIMER_NAMESPACE_DEFAULT,def_timeout_path=PATH_DEFAULT_TIMEOUT,ignore_duplicate=True):
-    if not namespace:
-      namespace = TIMER_NAMESPACE_DEFAULT
-    self.namespace = namespace
-    self.def_timeout_path = def_timeout_path
-    self.ignore_duplicate = ignore_duplicate
+    self.namespace=namespace
+    self.def_timeout_path=def_timeout_path
     self._timer_init()
-    self.curtime = utcnow()
+    self.curtime=utcnow()
   
   def get_timer_namespace_by_string(self,base_str):
-    return TIMER_NAMESPACE_BASE+ str(1+(int(md5(base_str).hexdigest(),16)%MAX_TIMER_TASK_NUMBER))
+    return self.namespace # dummy
   
   def get_timer_namespace_by_number(self,base_num):
-    return self.get_timer_namespace_by_string(str(base_num))
+    return self.namespace # dummy
   
   def _sem_init(self):
     memcache.delete(key=KEY_SEM,namespace=self.namespace)
@@ -398,7 +396,7 @@ class GAE_Timer1st(object):
   
   def _sem_lock(self):
     try:
-      _num = memcache.incr(key=KEY_SEM,initial_value=0,namespace=self.namespace)
+      _num=memcache.incr(key=KEY_SEM,initial_value=0,namespace=self.namespace)
       if _num == 1:
         log('_sem_lock: success (namespace=%s)' % (self.namespace))
         return True
@@ -407,7 +405,7 @@ class GAE_Timer1st(object):
         log('_sem_lock: failure (number=%s) (namespace=%s)' % (str(_num),self.namespace))
         return False
     except Exception, s:
-      logerr('_sem_lock: %s (namespace=%s)' % (str(s),self.namespace))
+      logerr('Error in GAE_Timer()._sem_lock():',s)
       return False
   
   def _sem_lock_retry(self,retry_num=MAX_RETRY_SEM_LOCK):
@@ -424,24 +422,16 @@ class GAE_Timer1st(object):
   
   def _sem_unlock(self):
     try:
-      _num = memcache.decr(key=KEY_SEM,namespace=self.namespace)
+      _num=memcache.decr(key=KEY_SEM,namespace=self.namespace)
       if _num == 0:
         log('_sem_unlock: success (namespace=%s)' % (self.namespace))
       else:
         log('_sem_unlock: success (namespace=%s) remain number=%s (temporary conflict with others)' % (self.namespace,str(_num)))
     except Exception, s:
-      logerr('_sem_unlock: %s (namespace=%s)' % (str(s),self.namespace))
+      logerr('Error in GAE_Timer()._sem_unlock():',s)
   
   def _timer_init(self):
-    try:
-      header = memcache.get(key=KEY_THD,namespace=self.namespace)
-    except:
-      header = None
-    if not header:
-      try:
-        self.clear_all_timers()
-      except:
-        pass
+    pass # dummy
   
   def _get_timerid(self):
     return str(memcache.incr(key=KEY_TID,initial_value=0,namespace=self.namespace))
@@ -453,500 +443,310 @@ class GAE_Timer1st(object):
     return self.def_timeout_path
   
   def clear_all_timers(self):
-    loginfo(u'clear_all_timers: start (namespace=%s)' % (self.namespace))
-    namespace = self.namespace
+    log(u'GAE_Timer().clear_all_timers(): start')
+    
     self._sem_init()
-    self._sem_lock_retry()
-    header = TIMER_HEADER()
-    memcache.set(key=KEY_THD,value=header,time=0,namespace=namespace)
-    memcache.set(key=KEY_TID,value=0,time=0,namespace=namespace)
-    memcache.set(key=KEY_TIMER_MAP,value={},time=0,namespace=namespace)
-    memcache.set(key=KEY_RESET_TIMERS,value=[],time=0,namespace=namespace)
-    self._sem_unlock()
-    loginfo(u'clear_all_timers: end')
+    flg_sem=self._sem_lock()
+    
+    memcache.delete(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+    
+    db_timer_all=dbGaeTimer.all()
+    while True:
+      db_timer_list=db_timer_all.fetch(DB_DELETE_FETCH_LIMIT)
+      len_list=len(db_timer_list)
+      if len_list<=0:
+        break
+      db_delete(db_timer_list)
+      if len_list<DB_DELETE_FETCH_LIMIT:
+        break
+    
+    if flg_sem:
+      self._sem_unlock()
+    
+    log(u'GAE_Timer().clear_all_timers(): normal end')
   
-  def set_timer(self,minutes=None,crontime=None,tz_hours=DEFAULT_TZ_HOURS,url=None,user_id=None,user_info=None,repeat=True,timerid=None,sem=True,prn=False,tvalue=None):
-    log(u'set_timer (namespace=%s)' % (self.namespace))
+  def set_timer(self,minutes=None,crontime=None,tz_hours=DEFAULT_TZ_HOURS,url=None,user_id=None,user_info=None,repeat=True,timerid=None,sem=True,save_after=False,prn=False,tvalue=None):
+    log(u'GAE_Timer().set_timer(): start')
     
     try:
-      url = str(url)
-    except:
-      logerr(u'URL error: %s' % (url))
+      url=str(url)
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().set_timer(): invalid URL "%s"' % (url),s)
       return None
     
-    timer = TIMER_INFO()
-    timer.minutes = minutes
-    timer.crontime = crontime
-    timer.tz_hours = tz_hours
-    timer.url = url
-    timer.user_id = user_id
-    timer.user_info = user_info
-    timer.repeat = repeat
+    if timerid:
+      if save_after:
+        db_timer=dbGaeTimer(key_name=str(timerid))
+      else:
+        db_timer=get_db_timer(timerid)
+        if not db_timer:
+          logerr(u'Error in GAE_Timer().set_timer(): existing timer not found(timerid=%s)' % str(timerid))
+          return None
+    else:
+      db_timer=dbGaeTimer()
     
-    if tvalue:
-      timeout = tvalue
-    elif crontime:
-      timeout = cron_nexttime(crontime,tz_hours=tz_hours)
+    if crontime:
+      timeout=cron_nexttime(crontime,tz_hours=tz_hours)
       if not timeout:
+        logerr(u'Error in GAE_Timer().set_timer(): invalid cron format',crontime)
         return None
     else:
       if not isinstance(minutes,(int,long)):
+        logerr(u'Error in GAE_Timer().set_timer(): invalid timeout minutes',minutes)
         return None
-      #timeout = utcnow() + timedelta(minutes=minutes)
-      timeout = self.curtime + timedelta(minutes=minutes)
+      timeout=self.curtime+timedelta(minutes=minutes)
     
-    timer.timeout = timeout
+    db_timer.minutes=minutes
+    db_timer.crontime=crontime
+    db_timer.tz_hours=tz_hours
+    db_timer.url=url
+    db_timer.user_id=user_id
+    db_timer.user_info=user_info
+    db_timer.repeat=repeat
     
-    namespace = self.namespace
+    if save_after:
+      loginfo(u'save after: timer(timerid=%s)' % str(timerid))
+      db_timer.flg_save=False
+    else:
+      db_put(db_timer)
+    
+    db_timer.timeout=timeout
+    
+    if not timerid:
+      timerid=get_db_timerid(db_timer)
     
     if sem:
-      self._sem_lock_retry()
+      try:
+        flg_sem=self._sem_lock_retry()
+      except Exception, s:
+        logerr(u'Error in GAE_Timer().set_timer(): semaphore lock failure',s)
+        return None
     
-    if timerid:
-      timerid = str(timerid)
-      flg_reset = True
-    else:
-      flg_reset = False
-      timerid = self._get_timerid()
+    try:
+      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+      if not timeout_dict:
+        timeout_dict={}
+      timeout_dict[timerid]=db_timer
+      memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().set_timer(): cannot load or save timeout_dict',s)
     
-    timer.timerid = timerid
-    
-    header = memcache.get(key=KEY_THD,namespace=namespace)
-    timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=namespace)
-    
-    if timer_map.get(timerid):
-      if sem:
-        self._sem_unlock()
-      err_str = u'set_timer: duplicate timerid=%s to set' % (timerid)
-      if self.ignore_duplicate:
-        loginfo(err_str)
-      else:
-        logerr(err_str)
-        raise DuplicateTimerError(err_str)
-      return timerid
-    
-    tmp_tid = header.first
-    if not tmp_tid:
-      header.first = header.last = timerid
-    else:
-      (prv_tid,prv_timer) = (None,None)
-      while True:
-        tmp_timer = timer_map.get(tmp_tid)
-        
-        if timeout<tmp_timer.timeout:
-          timer.prev = prv_tid
-          timer.next = tmp_tid
-          if prv_timer:
-            prv_timer.next = timerid
-          else:
-            header.first = timerid
-          tmp_timer.prev = timerid
-          break
-        
-        if not tmp_timer.next:
-          timer.prev = tmp_tid
-          timer.next = None
-          tmp_timer.next = header.last = timerid
-          timer_map[tmp_tid] = tmp_timer
-          break
-        
-        prv_tid = tmp_tid
-        prv_timer = tmp_timer
-        
-        tmp_tid = tmp_timer.next
-    
-    timer_map[timerid] = timer
-    
-    if flg_reset:
-      header.count_reset +=1
-    else:
-      header.count_set +=1
-    header.count +=1
-    
-    memcache.set(key=KEY_TIMER_MAP,value=timer_map,time=0,namespace=namespace)
-    memcache.set(key=KEY_THD,value=header,time=0,namespace=namespace)
-    
-    if sem:
+    if sem and flg_sem:
       self._sem_unlock()
     
-    if flg_reset:
-      log(u'reset timer(%s): next timeout=%s' % (timerid,timer.timeout))
-    else:
-      try:
-        self.save_last_status(timerid=timerid,last_timeout=u'',last_result=u'')
-      except:
-        pass
-      log(u'set timer(%s): next timeout=%s' % (timerid,timer.timeout))
-    
-    if prn:
-      self.prn_timer(timer=timer)
-    
+    log(u'GAE_Timer().set_timer(): normal end')
     return timerid
   
   def rel_timer(self,timerid,sem=True,prn=False):
-    timerid=str(timerid)
-    log(u'rel_timer: timerid=%s (namespace=%s)' % (timerid,self.namespace))
-    
-    namespace = self.namespace
+    log(u'GAE_Timer().rel_timer(): start')
     
     if sem:
-      self._sem_lock_retry()
+      try:
+        flg_sem=self._sem_lock_retry()
+      except Exception, s:
+        logerr(u'Error in GAE_Timer().rel_timer(): semaphore lock failure',s)
+        return None
     
-    timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=namespace)
+    try:
+      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+      if not timeout_dict:
+        timeout_dict={}
+      if timeout_dict.has_key(timerid):
+        del(timeout_dict[timerid])
+      memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().rel_timer(): cannot load or save timeout_dict',s)
     
-    timer = timer_map.get(timerid)
-    
-    if timer:
-      if prn:
-        self.prn_timer(timer=timer)
-      
-      header = memcache.get(key=KEY_THD,namespace=namespace)
-      prv_tid = timer.prev
-      nxt_tid = timer.next
-      
-      if prv_tid:
-        prv_timer = timer_map.get(prv_tid)
-        prv_timer.next = nxt_tid
-      else:
-        header.first = nxt_tid
-      
-      if nxt_tid:
-        nxt_timer = timer_map.get(nxt_tid)
-        nxt_timer.prev = prv_tid
-      else:
-        header.last = prv_tid
-      
-      del(timer_map[timerid])
-      
-      header.count_release +=1
-      header.count -=1
-      
-      memcache.set(key=KEY_TIMER_MAP,value=timer_map,time=0,namespace=namespace)
-      memcache.set(key=KEY_THD,value=header,time=0,namespace=namespace)
-    
-    if sem:
+    if sem and flg_sem:
       self._sem_unlock()
     
-    if timer:
-      log(u'release timer(%s) complete' % (timerid))
-    else:
-      log(u'timerid=%s to release not found' % (timerid))
+    db_timer=get_db_timer(timerid)
+    if not db_timer:
+      logerr(u'Error in GAE_Timer().rel_timer(): existing timer not found(timerid=%s)' % str(timerid))
+      return None
     
-  def _reset_timer(self,timer,use_same_id=True,sem=True,prn=False,keep_tvalue=False):
-    if use_same_id:
-      timer_id = timer.timerid
-    else:
-      timer_id = None
+    db_delete(db_timer)
     
-    if keep_tvalue:
-      tvalue = timer.timeout
-    else:
-      tvalue = None
-    
-    self.set_timer(
-      minutes = timer.minutes,
-      crontime = timer.crontime,
-      tz_hours = timer.tz_hours,
-      url = timer.url,
-      user_id = timer.user_id,
-      user_info = timer.user_info,
-      repeat = timer.repeat,
-      timerid = timer_id,
-      sem = sem,
-      prn = prn,
-      tvalue = tvalue,
-    )
+    log(u'GAE_Timer().rel_timer(): normal end')
+    return
   
   def get_timeout_list(self,max_num=0):
-    log('check timeout timers: start (namespace=%s)' % (self.namespace))
-    
-    #curtime = utcnow()
-    curtime = self.curtime
-    flg_remain = False
-    namespace = self.namespace
-    _reset_timer = self._reset_timer
+    log('GAE_Timer().get_timeout_list(): start')
     
     try:
-      self._sem_lock_retry()
-    except:
-      self.check_and_restore()
+      flg_sem=self._sem_lock_retry()
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().get_timeout_list(): semaphore lock failure (patter-A)',s)
+      self._sem_init()
       try:
-        self._sem_lock_retry()
-      except:
-        return ([],True)
+        flg_sem=self._sem_lock_retry()
+      except Exception, s:
+        logerr(u'Error in GAE_Timer().get_timeout_list(): semaphore lock failure (pattern-B)',s)
+        flg_sem=None
     
-    reset_list = memcache.get(key=KEY_RESET_TIMERS,namespace=namespace)
-    if reset_list:
-      logerr(u'recover reset list')
-      for timer in reset_list:
-        _reset_timer(timer,sem=False,keep_tvalue=True)
-      memcache.set(key=KEY_RESET_TIMERS,value=[],time=0,namespace=namespace)
+    try:
+      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+      if not timeout_dict:
+        timeout_dict={}
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().get_timeout_list(): cannot load timeout_dict',s)
+      timeout_dict={}
     
-    timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=namespace)
-    header = memcache.get(key=KEY_THD,namespace=namespace)
-    self.prn_timer_header(header)
+    (db_timeout_entries,flg_remain,cnt_entry)=([],False,0)
+    curtime=self.curtime
     
-    timeout_list = []
-    reset_list = []
-    
-    tmp_tid = header.first
-    last_timer = None
-    count = 0
-    while tmp_tid:
-      if 0<max_num and max_num<=count:
-        flg_remain = True
-        break
-      tmp_timer = timer_map.get(tmp_tid)
-      if curtime < tmp_timer.timeout:
-        break
-      tmp_timer = timer_map.pop(tmp_tid)
-      timeout_list.append(tmp_timer)
-      if tmp_timer.repeat:
-        reset_list.append(tmp_timer)
-      last_timer = tmp_timer
-      count +=1
-      tmp_tid = tmp_timer.next
-    
-    reset_list.reverse()
-    memcache.set(key=KEY_RESET_TIMERS,value=reset_list,time=0,namespace=namespace)
-    
-    tnum = len(timeout_list)
-    if 0<tnum:
-      header.count_timeout +=tnum
-      header.count -=tnum
-      nxt_tid = last_timer.next
-      header.first = nxt_tid
-      if nxt_tid:
-        nxt_timer = timer_map.get(nxt_tid)
-        nxt_timer.prev = None
-      if not header.first:
-        header.last = None
+    cnt_save=MAX_SAVE_TIMER_PER_CYCLE
+    for (timerid,db_timer) in timeout_dict.items():
+      if not db_timer.flg_save and 0<cnt_save:
+        loginfo(u'save timer(timerid=%s)' % get_db_timerid(db_timer))
+        db_timer.flg_save=True
+        db_put(db_timer)
+        cnt_save-=1
+      timeout=db_timer.timeout
+      flg_next=False
+      if timeout:
+        if timeout<=curtime:
+          if not flg_remain:
+            cnt_entry+=1
+            db_timeout_entries.append(db_timer)
+            if db_timer.repeat:
+              flg_next=True
+            else:
+              db_timer.timeout=None
+            if max_num<=cnt_entry:
+              flg_remain=True
+      else:
+        flg_next=True
       
-      #memcache.set(key=KEY_TIMER_MAP,value=timer_map,time=0,namespace=namespace)
-      #memcache.set(key=KEY_THD,value=header,time=0,namespace=namespace)
+      if flg_next:
+        if db_timer.crontime:
+          next_timeout=cron_nexttime(db_timer.crontime,tz_hours=db_timer.tz_hours)
+        else:
+          next_timeout=curtime+timedelta(minutes=db_timer.minutes)
+        db_timer.timeout=next_timeout
     
-    # // 更新なしの場合でもmemcacheのリフレッシュのために必ず保存しなおす
-    memcache.set(key=KEY_TIMER_MAP,value=timer_map,time=0,namespace=namespace)
-    memcache.set(key=KEY_THD,value=header,time=0,namespace=namespace)
+    try:
+      memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().get_timeout_list(): cannot save timeout_dict',s)
     
-    for timer in reset_list:
-      _reset_timer(timer,sem=False)
-    memcache.set(key=KEY_RESET_TIMERS,value=[],time=0,namespace=namespace)
+    if flg_sem:
+      self._sem_unlock()
     
-    log('check timeout timers: end (namespace=%s)' % (self.namespace))
-    self.prn_timer_header()
-    
-    self._sem_unlock()
-    
-    return (timeout_list,flg_remain)
+    log('GAE_Timer().get_timeout_list(): normal end')
+    return (db_timeout_entries,flg_remain)
   
   def check_and_restore(self):
-    loginfo('check timer queue (namespace=%s)' % (self.namespace))
-    namespace = self.namespace
+    log('GAE_Timer().check_and_restore(): start')
     
-    if not self._sem_lock():
-      self._sem_init()
-      self._sem_lock_retry()
-    
-    header = memcache.get(key=KEY_THD,namespace=namespace)
-    timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=namespace)
-    if not timer_map:
-      timer_map = {}
-      memcache.set(key=KEY_TIMER_MAP,value=timer_map,time=0,namespace=namespace)
+    if get_maintenance_mode():
+      loginfo(u'*** maintenance mode ***')
+      return
     
     try:
-      (header,cnt,rcnt) = self.get_tim_counter(header=header,timer_map=timer_map,sem=False)
-      if header.count == cnt and cnt == rcnt:
-        self._sem_unlock()
-        log(u'timer queue: OK')
-        log(u'len(timer_map)=%d' % (len(timer_map)))
-        self.prn_timer_header(header)
-        return
-    except:
-      pass
-    
-    logerr(u'timer queue broken (namespace=%s)' % (self.namespace))
-    loginfo('restore timer queue: <before> (%s)' % (self.namespace))
-    loginfo(u'len(timer_map)=%d' % (len(timer_map)))
-    if header:
-      self.prn_timer_header(header)
-    else:
-      loginfo(u'header broken')
-    
-    #self._sem_unlock()
-    
-    #self.clear_all_timers() # !!! NG: clear backup of reset timers, and another task can access timer areas !!!
-    
-    reset_list = memcache.get(key=KEY_RESET_TIMERS,namespace=namespace)
-    if not reset_list:
-      reset_list = []
-    
-    memcache.set(key=KEY_TIMER_MAP,value={},time=0,namespace=namespace)
-    memcache.set(key=KEY_RESET_TIMERS,value=[],time=0,namespace=namespace)
-    
-    _reset_timer = self._reset_timer
-    
-    for ci in range(3):
-      header = TIMER_HEADER()
-      memcache.set(key=KEY_THD,value=header,time=0,namespace=namespace)
-      
-      #self._sem_lock_retry()
-      
+      flg_sem=self._sem_lock_retry()
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().check_and_restore(): semaphore lock failure (pattern-A)',s)
+      self._sem_init()
       try:
-        max_id = 0
-        for (timerid,timer) in timer_map.items():
-          try:
-            _tid = int(timerid)
-            if max_id<_tid:
-              max_id = _tid
-          except:
-            pass
-          _reset_timer(timer,sem=False,keep_tvalue=True) # occasionally raise exception (confilict with timercycle())
-        
-        for timer in reset_list:
-          try:
-            _tid = int(timer.timerid)
-            if max_id<_tid:
-              max_id = _tid
-          except:
-            pass
-          _reset_timer(timer,sem=False,keep_tvalue=True) # occasionally raise exception (confilict with timercycle())
-        break
-      except:
+        flg_sem=self._sem_lock_retry()
+      except Exception, s:
+        logerr(u'Error in GAE_Timer().clear_all_timers(): semaphore lock failure (pattern-B)',s)
+        flg_sem=None
+    
+    try:
+      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+      if not timeout_dict:
+        timeout_dict={}
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().check_and_restore(): cannot load timeout_dict',s)
+      timeout_dict={}
+    
+    curtime=self.curtime
+    db_timers=dbGaeTimer.all()
+    
+    for db_timer in db_timers:
+      timerid=get_db_timerid(db_timer)
+      if not timerid:
         continue
+      if timeout_dict.has_key(timerid):
+        continue
+      loginfo(u'timer(timerid=%s) not exist in cache' % str(timerid))
+      if not db_timer.timeout:
+        if db_timer.crontime:
+          next_timeout=cron_nexttime(db_timer.crontime,tz_hours=db_timer.tz_hours)
+        else:
+          next_timeout=curtime+timedelta(minutes=db_timer.minutes)
+        db_timer.timeout=next_timeout
+      timeout_dict[timerid]=db_timer
     
-    memcache.set(key=KEY_TID,value=max_id,time=0,namespace=namespace)
+    try:
+      memcache.set(key=KEY_TIMEOUT_DICT,value=timeout_dict,time=0,namespace=self.namespace)
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().check_and_restore(): cannot save timeout_dict',s)
     
-    self._sem_unlock()
+    if flg_sem:
+      self._sem_unlock()
     
-    loginfo('restore timer queue: <after> (namespace=%s)' % (self.namespace))
-    self.prn_timer_header()
+    log('GAE_Timer().check_and_restore(): normal end')
   
   def prn_timer_header(self,header=None):
-    if not header:
-      header = memcache.get(key=KEY_THD,namespace=self.namespace)
-    hmems=['first','last','count','count_set','count_reset','count_release','count_timeout']
-    log(u'[header] (namespace=%s)' % (self.namespace))
-    for mem in hmems:
-      log(u' %s = %s' % (mem,getattr(header,mem,u'')))
-    log('')
+    pass # dummy
   
-  def prn_timer(self,timer_map=None,timerid=None,timer=None):
-    if timer:
-      timerid = timer.timerid
-    else:
-      if not timerid:
-        return
-      if not timer_map:
-        timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=self.namespace)
-        if not timer_map: # critical error
-          logerr(u'prn_timer(): timer_map not found.')
-          return
-      timerid = str(timerid)
-      timer = timer_map.get(timerid)
+  def prn_timer(self,timer_map=None,timerid=None,db_timer=None):
+    if timerid:
+      db_timer=get_db_timer(timerid)
+    elif db_timer:
+      timerid=get_db_timerid(db_timer)
+    if not db_timer:
+      return
     
-    tmems=['timerid','prev','next','minutes','crontime','tz_hours','timeout','url','user_id','user_info','repeat']
-    log(u' [timer(id=%s)] (namespace=%s)' % (timerid,self.namespace))
+    tmems=['minutes','crontime','tz_hours','url','user_id','user_info','repeat']
+    log(u' [timer(id=%s)]' % str(timerid))
     for mem in tmems:
-      log(u'  %s = %s' % (mem,getattr(timer,mem,u'')))
+      log(u'  %s = %s' % (mem,str(getattr(db_timer,mem,u''))))
     log('')
   
-  def prn_timer_short(self,timer_map=None,timerid=None,timer=None):
-    if timer:
-      timerid = timer.timerid
-    else:
-      if not timerid:
-        return
-      if not timer_map:
-        timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=self.namespace)
-        if not timer_map: # critical error
-          logerr(u'prn_timer_short(): timer_map not found.',self.namespace)
-          return
-      timerid = str(timerid)
-      timer = timer_map.get(timerid)
+  def prn_timer_short(self,timer_map=None,timerid=None,db_timer=None):
+    if timerid:
+      db_timer=get_db_timer(timerid)
+    elif db_timer:
+      timerid=get_db_timerid(db_timer)
+    if not db_timer:
+      return
     
     tmems=['url','user_id','user_info']
-    log(u' [timer(id=%s)] (namespace=%s)' % (timerid,self.namespace))
+    log(u' [timer(id=%s)]' % str(timerid))
     for mem in tmems:
-      log(u'  %s = %s' % (mem,getattr(timer,mem,u'')))
+      log(u'  %s = %s' % (mem,str(getattr(db_timer,mem,u''))))
     log('')
   
   def prn_tim_list(self,header=None,timer_map=None,sem=True):
-    log(u'prn_tim_list: start (namespace=%s)' % (self.namespace))
-    prn_timer = self.prn_timer
-    if sem:
-      self._sem_lock_retry()
-    if not header:
-      header = memcache.get(key=KEY_THD,namespace=self.namespace)
-    self.prn_timer_header(header)
-    if not timer_map:
-      timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=self.namespace)
-    tmp_tid = header.first
-    while tmp_tid:
-      tmp_timer = timer_map.get(tmp_tid)
-      prn_timer(timer_map=timer_map,timer=tmp_timer)
-      tmp_tid = tmp_timer.next
-    if sem:
-      self._sem_unlock()
-    log(u'prn_tim_list: end (namespace=%s)' % (self.namespace))
-
-  def prn_tim_list2(self,header=None,timer_map=None,sem=True):
-    log(u'prn_tim_list2: start (namespace=%s)' % (self.namespace))
-    if sem:
-      try:
-        self._sem_lock_retry()
-      except:
-        self._sem_init()
-        self._sem_lock_retry()
+    try:
+      db_timers=dbGaeTimer.all().order('update')
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().prn_tim_list(): cannot get timer list',s)
+      db_timers=[]
     
-    self.prn_timer_header()
-    prn_timer = self.prn_timer
+    for db_timer in db_timers:
+      self.prn_timer(db_timer=db_timer)
     
-    if not timer_map:
-      timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=self.namespace)
-      if not timer_map:
-        timer_map = {}
+  def prn_tim_list_short(self,header=None,timer_map=None,sem=True):
+    try:
+      db_timers=dbGaeTimer.all().order('update')
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().prn_tim_list_short(): cannot get timer list',s)
+      db_timers=[]
     
-    for (timerid,timer) in timer_map.items():
-      log(u'<timerid=%s>' % (timerid))
-      prn_timer(timer_map=timer_map,timer=timer)
-    
-    if sem:
-      self._sem_unlock()
-    
-    log(u'prn_tim_list2: end (namespace=%s)' % (self.namespace))
+    for db_timer in db_timers:
+      self.prn_timer_short(db_timer=db_timer)
   
   def get_tim_counter(self,header=None,timer_map=None,sem=True):
-    log('get timer counter (namespace=%s)' % (self.namespace))
-    if sem:
-      self._sem_lock_retry()
-      
-    if not header:
-      header = memcache.get(key=KEY_THD,namespace=self.namespace)
-    if not timer_map:
-      timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=self.namespace)
-    
-    tmp_tid = header.first
-    cnt = 0
-    while tmp_tid:
-      tmp_timer = timer_map.get(tmp_tid)
-      tmp_tid = tmp_timer.next
-      cnt += 1
-    
-    tmp_tid = header.last
-    rcnt = 0
-    while tmp_tid:
-      tmp_timer = timer_map.get(tmp_tid)
-      tmp_tid = tmp_timer.prev
-      rcnt += 1
-    
-    if sem:
-      self._sem_unlock()
-    
+    cnt=rcnt=dbGaeTimer.all().count()
     return (header,cnt,rcnt)
   
   def prn_tim_counter(self):
-    (header,cnt,rcnt) = self.get_tim_counter()
+    (header,cnt,rcnt)=self.get_tim_counter()
     
     self.prn_timer_header(header)
     log(u'count=%d (reverse=%d)' % (cnt,rcnt))
@@ -955,847 +755,51 @@ class GAE_Timer1st(object):
     memcache.set(key=KEY_STATUS_BASE+str(timerid),value=dict(last_timeout=last_timeout,last_result=last_result),time=0,namespace=self.namespace)
   
   def get_last_status(self,timerid):
-    last_status = memcache.get(key=KEY_STATUS_BASE+str(timerid),namespace=self.namespace)
+    last_status=memcache.get(key=KEY_STATUS_BASE+str(timerid),namespace=self.namespace)
     if not last_status:
-      last_status = dict(last_timeout=u'',last_result=u'')
+      last_status=dict(last_timeout=u'',last_result=u'')
     return last_status
 
   def get_next_time(self,timerid,fmt=DEFAULT_DATETIME_FORMAT):
-    next_time = u''
-    timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=self.namespace)
-    timer = timer_map.get(str(timerid))
-    if timer:
-      try:
-        next_time = (timer.timeout+timedelta(hours=DEFAULT_TZ_HOURS)).strftime(fmt)
-      except:
-        next_time = u''
-    return next_time
+    try:
+      timeout_dict=memcache.get(key=KEY_TIMEOUT_DICT,namespace=self.namespace)
+      if not timeout_dict:
+        timeout_dict={}
+    except Exception, s:
+      logerr(u'Error in GAE_Timer().get_next_time(): cannot load timeout_dict',s)
+      timeout_dict={}
+    
+    db_timer=timeout_dict.get(timerid)
+    if not db_timer or not db_timer.timeout:
+      return u''
+    return (db_timer.timeout+timedelta(hours=DEFAULT_TZ_HOURS)).strftime(fmt)
   
   def get_timer_map(self):
-    timer_map = memcache.get(key=KEY_TIMER_MAP,namespace=self.namespace)
-    if not timer_map:
-      timer_map = {}
-    return timer_map
+    return [] # dummy
   
-#} // end of class GAE_Timer1st()
-
-
-#{ // class GAE_Timer2nd()
-class TIMER_HEADER_2ND(object):
-  def __init__(self):
-    self.first = None
-    self.last = None
-    self.count = 0
-    self.count_set = 0
-    self.count_reset = 0
-    self.count_release = 0
-    self.count_timeout = 0
-
-class TIMER_INFO_2ND(object):
-  def __init__(self):
-    self.timerid = None
-    self.prev = None
-    self.next = None
-    self.minutes = None
-    self.crontime = None
-    self.tz_hours = None
-    self.timeout = None
-    self.url = None
-    self.user_id = None
-    self.user_info = None
-    self.repeat = False
-    self.same_count = 0
-    self.same_prev = None
-    self.same_next = None
-
-class TIMER_MAP_2ND(object):
-  def __init__(self,header=None,timer_map=None):
-    if not header:
-      header = TIMER_HEADER_2ND()
-    if not timer_map:
-      timer_map = {}
-    self.header = header
-    self.timer_map = timer_map
-
-class GAE_Timer2nd(object):
-  def __init__(self,init=None,namespace=TIMER_NAMESPACE_2ND_DEFAULT,def_timeout_path=PATH_DEFAULT_TIMEOUT,ignore_duplicate=True):
-    if not namespace:
-      namespace = TIMER_NAMESPACE_2ND_DEFAULT
-    self.namespace = namespace
-    self.def_timeout_path = def_timeout_path
-    self.ignore_duplicate = ignore_duplicate
-    self._timer_init()
-    self.curtime = utcnow()
-  
-  def get_timer_namespace_by_string(self,base_str):
-    return TIMER_NAMESPACE_2ND_BASE+ str(1+(int(md5(base_str).hexdigest(),16)%MAX_TIMER_TASK_NUMBER))
-  
-  def get_timer_namespace_by_number(self,base_num):
-    return self.get_timer_namespace_by_string(str(base_num))
-  
-  def _sem_init(self):
-    memcache.delete(key=KEY_SEM_2ND,namespace=self.namespace)
-    loginfo('init semaphore (namespace=%s)' % (self.namespace))
-  
-  def _sem_lock(self):
-    try:
-      _num = memcache.incr(key=KEY_SEM_2ND,initial_value=0,namespace=self.namespace)
-      if _num == 1:
-        log('_sem_lock: success (namespace=%s)' % (self.namespace))
-        return True
-      else:
-        memcache.decr(key=KEY_SEM_2ND,namespace=self.namespace)
-        log('_sem_lock: failure (number=%s) (namespace=%s)' % (str(_num),self.namespace))
-        return False
-    except Exception, s:
-      logerr('_sem_lock: %s (namespace=%s)' % (str(s),self.namespace))
-      return False
-  
-  def _sem_lock_retry(self,retry_num=MAX_RETRY_SEM_LOCK):
-    for ci in range(1+retry_num):
-      if self._sem_lock():
-        if 0<ci:
-          log('get semaphore: retry number=%d (namespace=%s)' % (ci,self.namespace))
-        return True
-      if ci<=retry_num:
-        time.sleep(INTV_RETRY_SEM_LOCK)
-      else:
-        break
-    raise SemaphoreError('_sem_lock_retry: semaphore lock timeout')
-  
-  def _sem_unlock(self):
-    try:
-      _num = memcache.decr(key=KEY_SEM_2ND,namespace=self.namespace)
-      if _num == 0:
-        log('_sem_unlock: success (namespace=%s)' % (self.namespace))
-      else:
-        log('_sem_unlock: success (namespace=%s) remain number=%s (temporary conflict with others)' % (self.namespace,str(_num)))
-    except Exception, s:
-      logerr('_sem_unlock: %s (namespace=%s)' % (str(s),self.namespace))
-  
-  def _timer_init(self):
-    try:
-      timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=self.namespace)
-    except:
-      timer_map_2nd = None
-    if not timer_map_2nd:
-      try:
-        self.clear_all_timers()
-      except:
-        pass
-  
-  def _get_timerid(self):
-    return str(memcache.incr(key=KEY_TID_2ND,initial_value=0,namespace=self.namespace))
-  
-  def get_timer_namespace(self):
-    return self.namespace
-  
-  def get_def_timeout_path(self):
-    return self.def_timeout_path
-  
-  def clear_all_timers(self):
-    loginfo(u'clear_all_timers: start (namespace=%s)' % (self.namespace))
-    namespace = self.namespace
-    self._sem_init()
-    self._sem_lock_retry()
-    timer_map_2nd = TIMER_MAP_2ND()
-    memcache.set(key=KEY_TIMER_MAP_2ND,value=timer_map_2nd,time=0,namespace=namespace)
-    memcache.set(key=KEY_TID_2ND,value=0,time=0,namespace=namespace)
-    memcache.set(key=KEY_RESET_TIMERS_2ND,value=[],time=0,namespace=namespace)
-    self._sem_unlock()
-    loginfo(u'clear_all_timers: end')
-  
-  def set_timer(self,minutes=None,crontime=None,tz_hours=DEFAULT_TZ_HOURS,url=None,user_id=None,user_info=None,repeat=True,timerid=None,sem=True,prn=False,tvalue=None,old_timer=None,timer_map_2nd=None):
-    log(u'set_timer (namespace=%s)' % (self.namespace))
-    
-    if old_timer:
-      timer = old_timer
-      timer.prev = None
-      timer.next = None
-      timer.same_count = 0
-      timer.same_prev = None
-      timer.same_next = None
-      minutes = timer.minutes
-      crontime = timer.crontime
-      tz_hours = timer.tz_hours
-    else:
-      try:
-        url = str(url)
-      except:
-        logerr(u'URL error: %s' % (url))
-        return None
-      timer = TIMER_INFO_2ND()
-      timer.minutes = minutes
-      timer.crontime = crontime
-      timer.tz_hours = tz_hours
-      timer.url = url
-      timer.user_id = user_id
-      timer.user_info = user_info
-      timer.repeat = repeat
-    
-    if tvalue:
-      timeout = tvalue
-    elif crontime:
-      timeout = cron_nexttime(crontime,tz_hours=tz_hours)
-      if not timeout:
-        return None
-    else:
-      if not isinstance(minutes,(int,long)):
-        return None
-      #timeout = utcnow() + timedelta(minutes=minutes)
-      timeout = self.curtime + timedelta(minutes=minutes)
-    
-    timer.timeout = timeout
-    
-    namespace = self.namespace
-    
-    if sem:
-      self._sem_lock_retry()
-    
-    if timerid:
-      timerid = str(timerid)
-      flg_reset = True
-    else:
-      flg_reset = False
-      timerid = self._get_timerid()
-    
-    timer.timerid = timerid
-    
-    flg_save = False
-    if not timer_map_2nd:
-      flg_save = True
-      timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=namespace)
-    
-    if not timer_map_2nd: # critical error
-      logerr(u'set_timer(): timer_map_2nd not found.')
-      if sem:
-        self._sem_unlock()
-        return None
-    
-    header = timer_map_2nd.header
-    timer_map = timer_map_2nd.timer_map
-    
-    if timer_map.get(timerid):
-      if sem:
-        self._sem_unlock()
-      err_str = u'set_timer: duplicate timerid=%s to set' % (timerid)
-      if self.ignore_duplicate:
-        loginfo(err_str)
-      else:
-        logerr(err_str)
-        raise DuplicateTimerError(err_str)
-      return timerid
-    
-    tmp_tid = header.first
-    if not tmp_tid:
-      header.first = header.last = timerid
-    else:
-      (prv_tid,prv_timer) = (None,None)
-      while True:
-        tmp_timer = timer_map.get(tmp_tid)
-        
-        if timeout<tmp_timer.timeout:
-          _td = -(tmp_timer.timeout-timeout).seconds//60
-        else:
-          _td = (timeout-tmp_timer.timeout).seconds//60
-        
-        if _td == 0:
-          # // 同時タイムアウト
-          if tmp_timer.same_next:
-            tmp_same_timer = timer_map.get(tmp_timer.same_next)
-            tmp_timer.same_next = timerid
-            timer.same_prev = tmp_timer.timerid
-            timer.same_next = tmp_same_timer.timerid
-            tmp_same_timer.same_prev = timerid
-          else:
-            tmp_timer.same_next = timerid
-            timer.same_prev = tmp_timer.timerid
-          tmp_timer.same_count+=1
-          break
-        
-        if _td < 0:
-          # // より早くタイムアウト
-          timer.prev = prv_tid
-          timer.next = tmp_tid
-          if prv_timer:
-            prv_timer.next = timerid
-          else:
-            header.first = timerid
-          tmp_timer.prev = timerid
-          break
-        
-        # // より遅くタイムアウト
-        if not tmp_timer.next:
-          # // 一番後ろ
-          timer.prev = tmp_tid
-          timer.next = None
-          tmp_timer.next = header.last = timerid
-          timer_map[tmp_tid] = tmp_timer
-          break
-        
-        prv_tid = tmp_tid
-        prv_timer = tmp_timer
-        
-        tmp_tid = tmp_timer.next
-    
-    timer_map[timerid] = timer
-    
-    if flg_reset:
-      header.count_reset +=1
-    else:
-      header.count_set +=1
-    header.count +=1
-    
-    if flg_save:
-      #memcache.set(key=KEY_TIMER_MAP_2ND,value=timer_map_2nd,time=0,namespace=namespace)
-      memcache.set(key=KEY_TIMER_MAP_2ND,value=timer_map_2nd,time=3600,namespace=namespace)
-    
-    if sem:
-      self._sem_unlock()
-    
-    if flg_reset:
-      log(u'reset timer(%s): next timeout=%s' % (timerid,timer.timeout))
-    else:
-      try:
-        self.save_last_status(timerid=timerid,last_timeout=u'',last_result=u'')
-      except:
-        pass
-      log(u'set timer(%s): next timeout=%s' % (timerid,timer.timeout))
-    
-    if prn:
-      self.prn_timer(timer=timer)
-    
-    return timerid
-  
-  def rel_timer(self,timerid,sem=True,prn=False,timer_map_2nd=None):
-    timerid=str(timerid)
-    log(u'rel_timer: timerid=%s (namespace=%s)' % (timerid,self.namespace))
-    
-    namespace = self.namespace
-    
-    if sem:
-      self._sem_lock_retry()
-    
-    if not timer_map_2nd:
-      timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=namespace)
-    
-    if not timer_map_2nd: # critical error
-      logerr(u'rel_timer(): timer_map_2nd not found.')
-      if sem:
-        self._sem_unlock()
-        return None
-    
-    header = timer_map_2nd.header
-    timer_map = timer_map_2nd.timer_map
-    
-    timer = timer_map.get(timerid)
-    
-    if timer:
-      if prn:
-        self.prn_timer(timer=timer)
-      
-      while True:
-        # // 同時タイマチェック
-        if 0<timer.same_count:
-        
-          # // 同時タイマ有りかつtimerが先頭(same_countが入っているのは先頭のみ)
-          tmp_same_timer = timer_map.get(timer.same_next)
-          tmp_same_timer.same_prev = None
-          tmp_same_timer.same_count = timer.same_count-1
-          
-          tmp_same_timerid = tmp_same_timer.timerid
-          prv_tid = tmp_same_timer.prev = timer.prev
-          nxt_tid = tmp_same_timer.next = timer.next
-          
-          if prv_tid:
-            prv_timer = timer_map.get(prv_tid)
-            prv_timer.next = tmp_same_timerid
-          else:
-            header.first = tmp_same_timerid
-          
-          if nxt_tid:
-            nxt_timer = timer_map.get(nxt_tid)
-            nxt_timer.prev = tmp_same_timerid
-          else:
-            header.last = tmp_same_timerid
-          break
-        else:
-          # // 同時タイマがない、もしくはtimerが先頭以外
-          if timer.same_prev:
-            # // 同時タイマあり(先頭以外は必ずsame_prev有り)
-            if timer.same_next:
-              tmp_same_timer = timer_map.get(timer.same_next)
-              tmp_same_timer.same_prev = timer.same_prev
-            tmp_same_timer = timer_map.get(timer.same_prev)
-            tmp_same_timer.same_next = timer.same_next
-            # // 先頭に遡って、カウントダウン
-            while tmp_same_timer.same_prev:
-              tmp_same_timer = timer_map.get(tmp_same_timer.same_prev)
-            tmp_same_timer.same_count -= 1
-            break
-        
-        prv_tid = timer.prev
-        nxt_tid = timer.next
-        
-        if prv_tid:
-          prv_timer = timer_map.get(prv_tid)
-          prv_timer.next = nxt_tid
-        else:
-          header.first = nxt_tid
-        
-        if nxt_tid:
-          nxt_timer = timer_map.get(nxt_tid)
-          nxt_timer.prev = prv_tid
-        else:
-          header.last = prv_tid
-        
-        break
-      
-      del(timer_map[timerid])
-      
-      header.count_release +=1
-      header.count -=1
-      
-      #memcache.set(key=KEY_TIMER_MAP_2ND,value=timer_map_2nd,time=0,namespace=namespace)
-      memcache.set(key=KEY_TIMER_MAP_2ND,value=timer_map_2nd,time=3600,namespace=namespace)
-    
-    if sem:
-      self._sem_unlock()
-    
-    if timer:
-      log(u'release timer(%s) complete' % (timerid))
-    else:
-      log(u'timerid=%s to release not found' % (timerid))
-    
-  def _reset_timer(self,timer,use_same_id=True,sem=True,prn=False,keep_tvalue=False,timer_map_2nd=None):
-    if use_same_id:
-      timer_id = timer.timerid
-    else:
-      timer_id = None
-    
-    if keep_tvalue:
-      tvalue = timer.timeout
-    else:
-      tvalue = None
-    
-    self.set_timer(
-      timerid = timer_id,
-      sem = sem,
-      prn = prn,
-      tvalue = tvalue,
-      old_timer = timer,
-      timer_map_2nd = timer_map_2nd,
-    )
-  
-  def get_timeout_list(self,max_num=0):
-    log('check timeout timers: start (namespace=%s)' % (self.namespace))
-    
-    #curtime = utcnow()
-    curtime = self.curtime
-    flg_remain = False
-    namespace = self.namespace
-    _reset_timer = self._reset_timer
-    
-    try:
-      self._sem_lock_retry()
-    except:
-      self.check_and_restore()
-      try:
-        self._sem_lock_retry()
-      except:
-        return ([],True)
-    
-    timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=namespace)
-    
-    if not timer_map_2nd: # critical error
-      logerr(u'get_timeout_list(): timer_map_2nd not found.')
-      self._sem_unlock()
-      return ([],False)
-    
-    reset_list = memcache.get(key=KEY_RESET_TIMERS_2ND,namespace=namespace)
-    if reset_list:
-      logerr(u'recover reset list')
-      for timer in reset_list:
-        _reset_timer(timer,sem=False,keep_tvalue=True)
-      memcache.set(key=KEY_RESET_TIMERS_2ND,value=[],time=0,namespace=namespace)
-    
-    header = timer_map_2nd.header
-    timer_map = timer_map_2nd.timer_map
-    
-    self.prn_timer_header(header)
-    
-    timeout_list = []
-    reset_list = []
-    
-    tmp_tid = header.first
-    last_timer = None
-    count = 0
-    while tmp_tid:
-      if 0<max_num and max_num<=count:
-        flg_remain = True
-        break
-      tmp_timer = timer_map.get(tmp_tid)
-      if curtime < tmp_timer.timeout:
-        break
-      tmp_timer = timer_map.pop(tmp_tid)
-      timeout_list.append(tmp_timer)
-      if tmp_timer.repeat:
-        reset_list.append(tmp_timer)
-      
-      # // 同時タイマチェック
-      next_timerid = tmp_timer.same_next
-      while next_timerid:
-        tmp_same_timer = timer_map.pop(next_timerid)
-        timeout_list.append(tmp_same_timer)
-        if tmp_same_timer.repeat:
-          reset_list.append(tmp_same_timer)
-        next_timerid = tmp_same_timer.same_next
-      count += tmp_timer.same_count
-      
-      last_timer = tmp_timer
-      count +=1
-      tmp_tid = tmp_timer.next
-    
-    reset_list.reverse()
-    memcache.set(key=KEY_RESET_TIMERS_2ND,value=reset_list,time=0,namespace=namespace)
-    
-    tnum = len(timeout_list)
-    if 0<tnum:
-      header.count_timeout +=tnum
-      header.count -=tnum
-      nxt_tid = last_timer.next
-      header.first = nxt_tid
-      if nxt_tid:
-        nxt_timer = timer_map.get(nxt_tid)
-        nxt_timer.prev = None
-      if not header.first:
-        header.last = None
-      
-      #memcache.set(key=KEY_TIMER_MAP_2ND,value=timer_map_2nd,time=0,namespace=namespace) # // 後ろに移動
-    
-    for timer in reset_list:
-      _reset_timer(timer,sem=False,timer_map_2nd=timer_map_2nd)
-    
-    # // 更新なしの場合でもmemcacheのリフレッシュのために必ず保存しなおす
-    #memcache.set(key=KEY_TIMER_MAP_2ND,value=timer_map_2nd,time=0,namespace=namespace)
-    memcache.set(key=KEY_TIMER_MAP_2ND,value=timer_map_2nd,time=3600,namespace=namespace)
-    
-    memcache.set(key=KEY_RESET_TIMERS_2ND,value=[],time=0,namespace=namespace)
-    
-    log('check timeout timers: end (namespace=%s)' % (self.namespace))
-    self.prn_timer_header()
-    
-    self._sem_unlock()
-    
-    return (timeout_list,flg_remain)
-  
-  def check_and_restore(self):
-    namespace = self.namespace
-    loginfo('check timer queue (namespace=%s)' % (namespace))
-    
-    # // 割り切り
-    # // - memcache(KEY_TIMER_MAP_2ND)にアクセス出来なければ諦める。
-    # // - アクセス出来れば正常と見なす(バグがなければOKのはず…)。
-    timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=namespace)
-    if not timer_map_2nd: # critical error
-      logerr(u'check_and_restore(): timer_map_2nd not found.')
-      try:
-        self.clear_all_timers()
-        timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=namespace)
-      except:
-        logerr(u'critical situation...abort.')
-        return
-    
-    header = timer_map_2nd.header
-    self.prn_timer_header(header)
-  
-  def prn_timer_header(self,header=None):
-    if not header:
-      timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=self.namespace)
-      if not timer_map_2nd: # critical error
-        logerr(u'prn_timer_header(): timer_map_2nd not found.')
-        return
-      header = timer_map_2nd.header
-    hmems=['first','last','count','count_set','count_reset','count_release','count_timeout']
-    log(u'[header] (namespace=%s)' % (self.namespace))
-    for mem in hmems:
-      log(u' %s = %s' % (mem,getattr(header,mem,u'')))
-    log('')
-  
-  def prn_timer(self,timer_map=None,timerid=None,timer=None):
-    if timer:
-      timerid = timer.timerid
-    else:
-      if not timerid:
-        return
-      if not timer_map:
-        timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=self.namespace)
-        if not timer_map_2nd: # critical error
-          logerr(u'prn_timer(): timer_map_2nd not found.')
-          return
-        timer_map = timer_map_2nd.timer_map
-      timerid = str(timerid)
-      timer = timer_map.get(timerid)
-    
-    tmems=['timerid','prev','next','minutes','crontime','tz_hours','timeout','url','user_id','user_info','repeat','same_count','same_prev','same_next']
-    log(u' [timer(id=%s)] (namespace=%s)' % (timerid,self.namespace))
-    for mem in tmems:
-      log(u'  %s = %s' % (mem,getattr(timer,mem,u'')))
-    log('')
-  
-  def prn_timer_short(self,timer_map=None,timerid=None,timer=None):
-    if timer:
-      timerid = timer.timerid
-    else:
-      if not timerid:
-        return
-      if not timer_map:
-        timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=self.namespace)
-        if not timer_map_2nd: # critical error
-          logerr(u'prn_timer_short(): timer_map_2nd not found.',self.namespace)
-          return
-        timer_map = timer_map_2nd.timer_map
-      timerid = str(timerid)
-      timer = timer_map.get(timerid)
-    
-    tmems=['url','user_id','user_info']
-    log(u' [timer(id=%s)] (namespace=%s)' % (timerid,self.namespace))
-    for mem in tmems:
-      log(u'  %s = %s' % (mem,getattr(timer,mem,u'')))
-    log('')
-  
-  def prn_tim_list(self,header=None,timer_map=None,sem=True):
-    log(u'prn_tim_list: start (namespace=%s)' % (self.namespace))
-    prn_timer = self.prn_timer
-    if sem:
-      self._sem_lock_retry()
-    if not header or not timer_map:
-      timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=self.namespace)
-      if not timer_map_2nd: # critical error
-        logerr(u'prn_tim_list(): timer_map_2nd not found.')
-        if sem:
-          self._sem_unlock()
-        return
-      header = timer_map_2nd.header
-      timer_map = timer_map_2nd.timer_map
-    self.prn_timer_header(header)
-    tmp_tid = header.first
-    while tmp_tid:
-      tmp_timer = timer_map.get(tmp_tid)
-      prn_timer(timer_map=timer_map,timer=tmp_timer)
-      
-      # // 同時タイマチェック
-      next_timerid = tmp_timer.same_next
-      while next_timerid:
-        tmp_same_timer = timer_map.get(next_timerid)
-        prn_timer(timer_map=timer_map,timer=tmp_same_timer)
-        next_timerid = tmp_same_timer.same_next
-      
-      tmp_tid = tmp_timer.next
-    if sem:
-      self._sem_unlock()
-    log(u'prn_tim_list: end (namespace=%s)' % (self.namespace))
-
-  def prn_tim_list2(self,header=None,timer_map=None,sem=True):
-    log(u'prn_tim_list2: start (namespace=%s)' % (self.namespace))
-    if sem:
-      try:
-        self._sem_lock_retry()
-      except:
-        self._sem_init()
-        self._sem_lock_retry()
-    
-    if not header or not timer_map:
-      timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=self.namespace)
-      if not timer_map_2nd: # critical error
-        logerr(u'prn_tim_list2(): timer_map_2nd not found.')
-        if sem:
-          self._sem_unlock()
-        return
-      header = timer_map_2nd.header
-      timer_map = timer_map_2nd.timer_map
-    
-    self.prn_timer_header(header)
-    prn_timer = self.prn_timer
-    
-    for (timerid,timer) in timer_map.items():
-      log(u'<timerid=%s>' % (timerid))
-      prn_timer(timer_map=timer_map,timer=timer)
-    
-    if sem:
-      self._sem_unlock()
-    
-    log(u'prn_tim_list2: end (namespace=%s)' % (self.namespace))
-  
-  def get_tim_counter(self,header=None,timer_map=None,sem=True):
-    log('get timer counter (namespace=%s)' % (self.namespace))
-    if sem:
-      self._sem_lock_retry()
-      
-    if not header or not timer_map:
-      timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=self.namespace)
-      if not timer_map_2nd: # critical error
-        logerr(u'get_tim_counter(): timer_map_2nd not found.')
-        if sem:
-          self._sem_unlock()
-        return (None,0,0)
-      header = timer_map_2nd.header
-      timer_map = timer_map_2nd.timer_map
-    
-    # // 同時タイマ数カウント
-    def _same_count(_tmp_timer):
-      scnt=0
-      next_timerid = _tmp_timer.same_next
-      while next_timerid:
-        tmp_same_timer = timer_map.get(next_timerid)
-        next_timerid = tmp_same_timer.same_next
-        scnt += 1
-      return scnt
-    
-    tmp_tid = header.first
-    cnt = 0
-    while tmp_tid:
-      tmp_timer = timer_map.get(tmp_tid)
-      scnt = _same_count(tmp_timer)
-      if tmp_timer.same_count!=scnt:
-        logerr(u'same timer error(timerid=%s): %d!=%d' % (str(tmp_tid),tmp_timer.same_count,scnt))
-      cnt += scnt
-      tmp_tid = tmp_timer.next
-      cnt += 1
-    
-    tmp_tid = header.last
-    rcnt = 0
-    while tmp_tid:
-      tmp_timer = timer_map.get(tmp_tid)
-      scnt = _same_count(tmp_timer)
-      if tmp_timer.same_count!=scnt:
-        logerr(u'same timer error(timerid=%s): %d!=%d' % (str(tmp_tid),tmp_timer.same_count,scnt))
-      rcnt += scnt
-      tmp_tid = tmp_timer.prev
-      rcnt += 1
-    
-    if sem:
-      self._sem_unlock()
-    
-    return (header,cnt,rcnt)
-  
-  def prn_tim_counter(self):
-    (header,cnt,rcnt) = self.get_tim_counter()
-    
-    self.prn_timer_header(header)
-    log(u'count=%d (reverse=%d)' % (cnt,rcnt))
-
-  def save_last_status(self,timerid,last_timeout=u'',last_result=u''):
-    memcache.set(key=KEY_STATUS_2ND_BASE+str(timerid),value=dict(last_timeout=last_timeout,last_result=last_result),time=0,namespace=self.namespace)
-  
-  def get_last_status(self,timerid):
-    last_status = memcache.get(key=KEY_STATUS_2ND_BASE+str(timerid),namespace=self.namespace)
-    if not last_status:
-      last_status = dict(last_timeout=u'',last_result=u'')
-    return last_status
-
-  def get_next_time(self,timerid,fmt=DEFAULT_DATETIME_FORMAT):
-    next_time = u''
-    timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=self.namespace)
-    if not timer_map_2nd: # critical error
-      logerr(u'get_next_time(): timer_map_2nd not found.')
-      return next_time
-    timer_map = timer_map_2nd.timer_map
-    timer = timer_map.get(str(timerid))
-    if timer:
-      try:
-        next_time = (timer.timeout+timedelta(hours=DEFAULT_TZ_HOURS)).strftime(fmt)
-      except:
-        next_time = u''
-    return next_time
-  
-  def get_timer_map(self):
-    timer_map_2nd = memcache.get(key=KEY_TIMER_MAP_2ND,namespace=self.namespace)
-    if not timer_map_2nd: # critical error
-      logerr(u'get_timer_map(): timer_map_2nd not found.')
-      return {}
-    timer_map = timer_map_2nd.timer_map
-    if not timer_map:
-      timer_map = {}
-    return timer_map
-  
-#} // end of class GAE_Timer2nd()
-
-
-#{ // def GAE_Timer()
-class_GAE_TimerMap={
-  '0': GAE_Timer1st,
-  '1': GAE_Timer1st,
-  '2': GAE_Timer2nd,
-}
-
-def GAE_Timer(init=None,namespace=None,def_timeout_path=PATH_DEFAULT_TIMEOUT,ignore_duplicate=True):
-  return class_GAE_TimerMap[get_namespace_version(namespace)](
-    init=init,
-    namespace=namespace,
-    def_timeout_path=def_timeout_path,
-    ignore_duplicate=ignore_duplicate,
-  )
-#} // end of GAE_Timer()
-
-
-#{ // def get_timer_namespace_by_string()
-get_timer_namespace_by_string = GAE_Timer(namespace=TIMER_NAMESPACE_NEWEST_DEFAULT).get_timer_namespace_by_string
-#} // end of def get_timer_namespace_by_string()
-
-
-#{ // def get_timer_namespace_by_number()
-get_timer_namespace_by_number = GAE_Timer(namespace=TIMER_NAMESPACE_NEWEST_DEFAULT).get_timer_namespace_by_number
-#} // end of def get_timer_namespace_by_number()
+#} // end of class GAE_Timer()
 
 
 #{ // def timer_maintenance()
 def timer_maintenance():
-  def _wrapper(namespace):
-    gae_timer = GAE_Timer(namespace=namespace)
-    gae_timer.check_and_restore()
-  
-  _wrapper(TIMER_NAMESPACE_2ND_DEFAULT)
-  for ci in range(1,1+MAX_TIMER_TASK_NUMBER):
-    _wrapper(TIMER_NAMESPACE_2ND_BASE+str(ci))
-  
-  _wrapper(TIMER_NAMESPACE_DEFAULT)
-  for ci in range(1,1+MAX_TIMER_TASK_NUMBER):
-    _wrapper(TIMER_NAMESPACE_BASE+str(ci))
+  gae_timer=GAE_Timer()
+  gae_timer.check_and_restore()
 
 #} // end of def timer_maintenance()
 
 
 #{ // def timer_initialize()
 def timer_initialize():
-  def _wrapper(namespace):
-    gae_timer = GAE_Timer(namespace=namespace)
-    gae_timer.clear_all_timers()
-  
-  _wrapper(TIMER_NAMESPACE_2ND_DEFAULT)
-  for ci in range(1,1+MAX_TIMER_TASK_NUMBER):
-    _wrapper(TIMER_NAMESPACE_2ND_BASE+str(ci))
-  
-  _wrapper(TIMER_NAMESPACE_DEFAULT)
-  for ci in range(1,1+MAX_TIMER_TASK_NUMBER):
-    _wrapper(TIMER_NAMESPACE_BASE+str(ci))
+  gae_timer=GAE_Timer()
+  gae_timer.clear_all_timers()
   
 #} // end of def timer_initialize()
 
 
 #{ // def prn_timer_headers()
 def prn_timer_headers():
-  def _wrapper(namespace):
-    gae_timer = GAE_Timer(namespace=namespace)
-    gae_timer.prn_timer_header()
-  
-  _wrapper(TIMER_NAMESPACE_2ND_DEFAULT)
-  for ci in range(1,1+MAX_TIMER_TASK_NUMBER):
-    _wrapper(TIMER_NAMESPACE_2ND_BASE+str(ci))
-  
-  _wrapper(TIMER_NAMESPACE_DEFAULT)
-  for ci in range(1,1+MAX_TIMER_TASK_NUMBER):
-    _wrapper(TIMER_NAMESPACE_BASE+str(ci))
+  gae_timer=GAE_Timer()
+  gae_timer.prn_timer_header()
   
 #} // end of def prn_timer_headers()
 
@@ -1803,14 +807,14 @@ def prn_timer_headers():
 #{ // def get_maintenance_mode()
 def get_maintenance_mode():
   try:
-    flg = memcache.get(key=KEY_MAINTENANCE_MODE,namespace=TIMER_NAMESPACE_NEWEST_DEFAULT)
+    flg=memcache.get(key=KEY_MAINTENANCE_MODE,namespace=TIMER_NAMESPACE_DEFAULT)
   except:
-    flg = False
+    flg=False
   if flg:
-    maintenance_mode = True
+    maintenance_mode=True
     log(u'*** maintenance_mode = ON  ***')
   else:
-    maintenance_mode = False
+    maintenance_mode=False
     log(u'*** maintenance_mode = OFF ***')
   return maintenance_mode
 #} // end of def get_maintenance_mode()
@@ -1819,13 +823,13 @@ def get_maintenance_mode():
 #{ // def set_maintenance_mode()
 def set_maintenance_mode(flg=False):
   if flg:
-    maintenance_mode = True
+    maintenance_mode=True
     loginfo(u'*** set maintenance_mode flag ***')
   else:
-    maintenance_mode = False
+    maintenance_mode=False
     loginfo(u'*** reset maintenance_mode flag ***')
   try:
-    memcache.set(key=KEY_MAINTENANCE_MODE,value=maintenance_mode,time=0,namespace=TIMER_NAMESPACE_NEWEST_DEFAULT)
+    memcache.set(key=KEY_MAINTENANCE_MODE,value=maintenance_mode,time=0,namespace=TIMER_NAMESPACE_DEFAULT)
   except:
     pass
   return maintenance_mode
@@ -1833,237 +837,161 @@ def set_maintenance_mode(flg=False):
 
 
 #{ // class timercycle()
+re_def_url=re.compile(u'^([^:]+://[^/]*).*$')
+
 class timercycle(webapp.RequestHandler):
   def get(self):
-    (req,rsp) = (self.request,self.response)
+    (req,rsp)=(self.request,self.response)
     
     rsp.set_status(200)
+    str_rsp=u'complete'
     
-    if get_maintenance_mode():
-      loginfo(u'*** maintenance mode ***')
-      rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
-      rsp.out.write(u'maintenance mode')
-      return
-    
-    try:
-      call_num = int(req.get('num','1'))
-    except:
-      call_num = 1
-    
-    is_2nd = req.get('2nd',u'')
-    
-    nsid = req.get('nsid',u'')
-    
-    if is_2nd:
-      namespace = TIMER_NAMESPACE_2ND_BASE + nsid
-    else:
-      namespace = TIMER_NAMESPACE_BASE + nsid
-    
-    if namespace==TIMER_NAMESPACE_DEFAULT and call_num==1:
+    while True:
+      if get_maintenance_mode():
+        loginfo(u'*** maintenance mode ***')
+        str_rsp=u'maintenance mode'
+        break
+      
       try:
-        taskqueue.add(url=PATH_CYCLE+'?2nd=1',method='GET',headers={'X-AppEngine-TaskRetryCount':0})
-      except Exception, s:
-        logerr(' => taskqueue error: %s' % (str(s)))
-        pass
-      for ci in range(1,1+MAX_TIMER_TASK_NUMBER):
-        try:
-          _url=PATH_CYCLE+'?nsid=%d' % (ci)
-          log('call nsid=%d' % (ci))
-          taskqueue.add(url=_url,method='GET',headers={'X-AppEngine-TaskRetryCount':0})
-        except Exception, s:
-          logerr(' => taskqueue error: %s' % (str(s)))
-          pass
-    elif namespace==TIMER_NAMESPACE_2ND_DEFAULT and call_num==1:
-      for ci in range(1,1+MAX_TIMER_TASK_NUMBER):
-        try:
-          _url=PATH_CYCLE+'?2nd=1&nsid=%d' % (ci)
-          log('call nsid=%d' % (ci))
-          taskqueue.add(url=_url,method='GET',headers={'X-AppEngine-TaskRetryCount':0})
-        except Exception, s:
-          logerr(' => taskqueue error: %s' % (str(s)))
-          pass
-    
-    gae_timer = GAE_Timer(namespace=namespace)
-    #curtime_str = (utcnow()+timedelta(hours=DEFAULT_TZ_HOURS)).strftime(DEFAULT_DATETIME_FORMAT)
-    curtime_str = (gae_timer.curtime+timedelta(hours=DEFAULT_TZ_HOURS)).strftime(DEFAULT_DATETIME_FORMAT)
-    
-    log(u'timercycle: %s (namespace=%s call number=%d)' % (curtime_str,namespace,call_num))
-    
-    (timeoutlist,flg_remain) = gae_timer.get_timeout_list(max_num=MAX_TIMEOUT_NUM)
-    
-    prn_timer_short = gae_timer.prn_timer_short
-    
-    urls = {}
-    def callback(timer,result):
-      timerid = timer.timerid
-      log(u'callback(timerid=%s): "%s"' % (timerid,urls[timerid]))
-      if isinstance(result,basestring):
-        s_result = result
-      elif result:
-        try:
-          s_result = u'code: %d' % (result.status_code)
-        except:
+        call_num=int(req.get('num','1'))
+      except:
+        call_num=1
+      
+      gae_timer=GAE_Timer()
+      curtime_str=(gae_timer.curtime+timedelta(hours=DEFAULT_TZ_HOURS)).strftime(DEFAULT_DATETIME_FORMAT)
+      
+      log(u'timercycle().get(): %s (call number=%d)' % (curtime_str,call_num))
+      
+      (db_timeout_entries,flg_remain)=gae_timer.get_timeout_list(max_num=MAX_TIMEOUT_NUM)
+      
+      urls={}
+      def callback(timerid,result):
+        log(u'callback(timerid=%s): "%s"' % (str(timerid),urls[timerid]))
+        if isinstance(result,basestring):
+          s_result=result
+        elif result:
           try:
-            s_result = unicode(result)
+            s_result=u'code: %d' % (result.status_code)
           except:
-            s_result = u'unknown error(1)'
-      else:
-        s_result = u'unknown error(2)'
+            try:
+              s_result=unicode(result)
+            except:
+              s_result=u'unknown error(1)'
+        else:
+          s_result=u'unknown error(2)'
+        gae_timer.save_last_status(timerid=timerid,last_timeout=curtime_str,last_result=s_result)
+        log(s_result)
       
-      gae_timer.save_last_status(timerid=timerid,last_timeout=curtime_str,last_result=s_result)
+      def_url=re_def_url.sub(r'\1',req.url)+gae_timer.get_def_timeout_path()
       
-      log(s_result)
-      #gae_timer.prn_timer_short(timer=timer) # NG(?)
-    
-    def_url = re.sub(u'^([^:]+://[^/]*).*$',r'\1',req.url)+gae_timer.get_def_timeout_path()
-    
-    str_rsp = 'timercycle: complete'
-    
-    while flg_remain:
-      call_num += 1
-      if MAX_CALL_NUM < call_num:
-        str_rsp = 'timercycle: stop(max number(%d) called)' % (MAX_CALL_NUM)
+      while flg_remain:
+        call_num+=1
+        if MAX_CALL_NUM < call_num:
+          str_rsp=u'stop(max number(%d) called)' % (MAX_CALL_NUM)
+          break
+        _url=PATH_CYCLE+'?num=%d' % (call_num)
+        log('  timeout timers left => call taskqueue (%s)' % (_url))
+        try:
+          taskqueue.add(url=_url,method='GET',headers={'X-AppEngine-TaskRetryCount':0})
+          str_rsp=u'continue'
+          break
+        except Exception, s:
+          logerr('Error in timercycle().get(): cannot add taskqueue',s)
+          pass
         break
-      if is_2nd: # [2010/10/19]条件追加
-        _url = PATH_CYCLE+'?2nd=1&nsid=%s&num=%d' % (nsid,call_num)
-      else:
-        _url = PATH_CYCLE+'?nsid=%s&num=%d' % (nsid,call_num)
-      log('  timeout timers left => call taskqueue (%s)' % (_url))
-      try:
-        taskqueue.add(url=_url,method='GET',headers={'X-AppEngine-TaskRetryCount':0})
-        str_rsp = 'timercycle: continue'
-        break
-      except Exception, s:
-        logerr(' => taskqueue error: %s' % (str(s)))
-        pass
+      
+      rpcs=[]
+      for db_timer in db_timeout_entries:
+        timerid=get_db_timerid(db_timer)
+        if not timerid:
+          continue
+        gae_timer.prn_timer_short(db_timer=db_timer)
+        url=db_timer.url
+        if url:
+          params=None
+        else:
+          url=def_url
+          params={'timerid':timerid}
+          if db_timer.user_id is not None:
+            params['user_id']=db_timer.user_id
+          if db_timer.user_info is not None:
+            params['user_info']=db_timer.user_info
+        
+        urls[timerid]=url
+        log(u'call(timerid=%s): "%s"' % (timerid,url))
+        
+        if SAVE_CALLBACK_RESULT:
+          rpc=fetch_rpc(url=url,method='GET',params=params,keyid=timerid,callback=callback)
+        else:
+          rpc=fetch_rpc(url=url,method='GET',params=params,keyid=timerid)
+        if rpc:
+          rpcs.append(rpc)
+      
+      if RPC_WAIT:
+        for rpc in rpcs:
+          rpc.wait()
+       
       break
     
-    rpcs = []
-    for timer in timeoutlist:
-      gae_timer.prn_timer_short(timer=timer) # OK(?)
-      timerid = timer.timerid
-      url = timer.url
-      if url:
-        params = None
-      else:
-        url = def_url
-        params = {'timerid':timerid}
-        if timer.user_id != None:
-          params['user_id'] = timer.user_id
-        if timer.user_info != None:
-          params['user_info'] = timer.user_info
-      
-      urls[timerid] = url
-      log(u'call(timerid=%s): "%s"' % (timerid,url))
-      
-      if SAVE_CALLBACK_RESULT:
-        rpc = fetch_rpc(url=url,method='GET',params=params,keyid=timer,callback=callback)
-      else:
-        rpc = fetch_rpc(url=url,method='GET',params=params,keyid=timer)
-      if rpc:
-        rpcs.append(rpc)
-    
-    if RPC_WAIT:
-      for rpc in rpcs:
-        rpc.wait()
-    
-    log(str_rsp)
+    log(u'timercycle().get(): %s' % str_rsp)
     rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
     rsp.out.write(str_rsp)
 
 #} // end of class timercycle()
 
 
-#{ // def timer_req_work()
-def timer_req_work(self,task_name,do_by_ns,is_2nd):
-  (req,rsp) = (self.request,self.response)
-  
-  rsp.set_status(200)
-  
-  def _wrapper(namespace):
-    loginfo(u'%(task_name)s: called (namespace=%(namespace)s)' % dict(task_name=task_name,namespace=namespace))
-    do_by_ns(namespace)
-  
-  nsid = req.get('nsid',u'')
-  if nsid != u'':
-    if is_2nd:
-      _wrapper(TIMER_NAMESPACE_2ND_BASE+nsid)
-    else:
-      _wrapper(TIMER_NAMESPACE_BASE+nsid)
-    log(u'')
-  else:
-    if is_2nd:
-      _wrapper(TIMER_NAMESPACE_2ND_DEFAULT)
-    else:
-      _wrapper(TIMER_NAMESPACE_DEFAULT)
-    log(u'')
-    for ci in range(1,1+MAX_TIMER_TASK_NUMBER):
-      if is_2nd:
-        _wrapper(TIMER_NAMESPACE_2ND_BASE+str(ci))
-      else:
-        _wrapper(TIMER_NAMESPACE_BASE+str(ci))
-      log(u'')
-  
-  rsp_str = u'%(task_name)s: end' % dict(task_name=task_name)
-  loginfo(rsp_str)
-  rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
-  rsp.out.write(rsp_str.encode('utf-8'))
-  
-#} // end of def timer_req_work()
-
-
 #{ // class showlist()
 class showlist(webapp.RequestHandler):
   def get(self):
-    (req,rsp) = (self.request,self.response)
+    (req,rsp)=(self.request,self.response)
     
-    def do_by_ns(namespace):
-      gae_timer = GAE_Timer(namespace=namespace)
-      gae_timer.prn_tim_list()
-    
-    timer_req_work(self,'showlist',do_by_ns,req.get('2nd'))
+    gae_timer=GAE_Timer()
+    gae_timer.prn_tim_list()
 
+    rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
+    rsp.out.write('normal end')
+    
 #} // end of class showlist()
 
 
-#{ // class showlist2()
-class showlist2(webapp.RequestHandler):
+#{ // class showlist_short()
+class showlist_short(webapp.RequestHandler):
   def get(self):
-    (req,rsp) = (self.request,self.response)
+    (req,rsp)=(self.request,self.response)
     
-    def do_by_ns(namespace):
-      gae_timer = GAE_Timer(namespace=namespace)
-      gae_timer.prn_tim_list2()
-    
-    timer_req_work(self,'showlist2',do_by_ns,req.get('2nd'))
+    gae_timer=GAE_Timer()
+    gae_timer.prn_tim_list_short()
 
-#} // end of class showlist2()
+    rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
+    rsp.out.write('normal end')
+    
+#} // end of class showlist_short()
 
 
 #{ // class showcounter()
 class showcounter(webapp.RequestHandler):
   def get(self):
-    (req,rsp) = (self.request,self.response)
+    (req,rsp)=(self.request,self.response)
     
-    def do_by_ns(namespace):
-      gae_timer = GAE_Timer(namespace=namespace)
-      gae_timer.prn_tim_counter()
-    
-    timer_req_work(self,'showcounter',do_by_ns,req.get('2nd'))
+    gae_timer=GAE_Timer()
+    gae_timer.prn_tim_counter()
 
+    rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
+    rsp.out.write('normal end')
+    
 #} // end of class showcounter()
 
 
 #{ // class restore()
 class restore(webapp.RequestHandler):
   def get(self):
-    (req,rsp) = (self.request,self.response)
+    (req,rsp)=(self.request,self.response)
     
-    def do_by_ns(namespace):
-      gae_timer = GAE_Timer(namespace=namespace)
-      gae_timer.check_and_restore()
+    gae_timer=GAE_Timer()
+    gae_timer.check_and_restore()
     
-    timer_req_work(self,'restore',do_by_ns,req.get('2nd'))
+    rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
+    rsp.out.write('normal end')
 
 #} // end of class restore()
 
@@ -2071,15 +999,15 @@ class restore(webapp.RequestHandler):
 #{ // class clearall()
 class clearall(webapp.RequestHandler):
   def _common(self):
-    (req,rsp) = (self.request,self.response)
+    (req,rsp)=(self.request,self.response)
     
-    def do_by_ns(namespace):
-      gae_timer = GAE_Timer(namespace=namespace)
-      gae_timer.clear_all_timers()
-      gae_timer.prn_timer_header()
-    
-    timer_req_work(self,'clearall',do_by_ns,req.get('2nd'))
+    gae_timer=GAE_Timer()
+    gae_timer.clear_all_timers()
+    gae_timer.prn_timer_header()
   
+    rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
+    rsp.out.write('normal end')
+    
   def get(self):
     self._common()
   
@@ -2092,7 +1020,7 @@ class clearall(webapp.RequestHandler):
 #{ // class def_timeout()
 class def_timeout(webapp.RequestHandler):
   def get(self):
-    (req,rsp) = (self.request,self.response)
+    (req,rsp)=(self.request,self.response)
     (rheaders,rcookies)=(req.headers,req.cookies)
     
     rsp.set_status(200)
@@ -2109,17 +1037,89 @@ class def_timeout(webapp.RequestHandler):
 #} // end of class def_timeout()
 
 
+#{ // class settimer()
+class settimer(webapp.RequestHandler):
+  def _common(self):
+    (req,rsp)=(self.request,self.response)
+    (rheaders,rcookies)=(req.headers,req.cookies)
+    
+    gae_timer=GAE_Timer()
+    try:
+      minutes=int(req.get('minutes'))
+    except:
+      minutes=None
+    try:
+      tz_hours=float(req.get('tz_hours',DEFAULT_TZ_HOURS))
+    except:
+      tz_hours=DEFAULT_TZ_HOURS
+    if req.get('repeat')=='1':
+      repeat=True
+    else:
+      repeat=False
+    
+    timerid=gae_timer.set_timer(
+      minutes=minutes,
+      crontime=req.get('crontime'),
+      tz_hours=tz_hours,
+      url=req.get('url'),
+      user_id=req.get('user_id'),
+      user_info=req.get('user_info'),
+      repeat=repeat,
+      timerid=req.get('timer_id'),
+    )
+    rsp.set_status(200)
+    rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
+    if timerid:
+      timerid=str(timerid)
+    else:
+      timerid=u''
+    rsp.out.write(timerid)
+  
+  def get(self):
+    self._common()
+
+  def post(self):
+    self._common()
+
+#} // end of class settimer()
+
+
+#{ // class reltimer()
+class reltimer(webapp.RequestHandler):
+  def _common(self):
+    (req,rsp)=(self.request,self.response)
+    (rheaders,rcookies)=(req.headers,req.cookies)
+    
+    gae_timer=GAE_Timer()
+    gae_timer.rel_timer(
+      timerid=req.get('timerid'),
+    )
+    rsp.set_status(200)
+    rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
+    rsp.out.write(u'')
+
+  def get(self):
+    self._common()
+
+  def post(self):
+    self._common()
+
+#} // end of class reltimer()
+
+
 #{ // def main()
 def main():
   logging.getLogger().setLevel(DEBUG_LEVEL)
-  application = webapp.WSGIApplication([
-    (PATH_CYCLE, timercycle),
-    (PATH_SHOWLIST, showlist),
-    (PATH_SHOWLIST2, showlist2),
-    (PATH_SHOWCOUNTER, showcounter),
-    (PATH_RESTORE, restore),
-    (PATH_CLEARALL, clearall),
-    (PATH_DEFAULT_TIMEOUT, def_timeout),
+  application=webapp.WSGIApplication([
+    (PATH_CYCLE          , timercycle    ),
+    (PATH_SHOWLIST       , showlist      ),
+    (PATH_SHOWLIST_SHORT , showlist_short),
+    (PATH_SHOWCOUNTER    , showcounter   ),
+    (PATH_RESTORE        , restore       ),
+    (PATH_CLEARALL       , clearall      ),
+    (PATH_SET_TIMER      , settimer      ),
+    (PATH_REL_TIMER      , reltimer      ),
+    (PATH_DEFAULT_TIMEOUT, def_timeout   ),
   ],debug=DEBUG_FLAG)
   wsgiref.handlers.CGIHandler().run(application)
 #} // end of def main()
@@ -2131,15 +1131,28 @@ if __name__ == "__main__":
 #==============================================================================
 # 更新履歴
 #==============================================================================
+2010.10.23: version 0.0.2
+ - タイマ用の元データをmemcache上に持つのを止め、datastore上に持つように全面改修。
+   ※memcacheは前振れなく消えることがあり、データの不整合が発生しやすいため、
+     datastoreの情報から復元できるようにした。
+ 
+ - 復元用処理を gaecron.py(checkTimer) から gaetimer.py(restore) に移行。
+   ※cron.yaml修正。
+
+
+#------------------------------------------------------------------------------
 2010.10.19: version 0.0.1f
  - 前回実行時刻と結果が表示されないようになっていたのを修正。
    ※GAEの仕様変更のため(?)、rpc.wait()を明示的にコールしないとcallbackされない
      ようになった模様（callback中で前回時刻等を記録していた)。
+ 
  - タイマの一部がうまく実行されないことがある不具合修正。
+
 
 2010.06.21: version 0.0.1e1
  - version 0.01eにて、誤って_sem_init()の中身が空にしていたのを修正。
  
+
 2010.06.19: version 0.0.1e
  - タイマキューを同時タイムアウト対応にした class GAE_Timer2nd() 追加。
    ※旧来の class GAE_Timer() は class GAE_Timer1st() に変更。
@@ -2150,6 +1163,7 @@ if __name__ == "__main__":
  
  - その他、各種不具合対応。
  
+
 2010.05.21: version 0.0.1d
  - 修復処理（check_and_restore()）で、まれに timercycle処理が割り込み、_reset_timer()
    （から呼ぶset_timer()）処理で例外が発生、データが消えてしまう現象への対策。
@@ -2164,6 +1178,7 @@ if __name__ == "__main__":
    新規作成（それぞれ、GAE_timer下のcheck_and_restore()、clear_all_timers()、
    prn_timer_header()をnamespaceをまとめてコールするためのラッパ関数)。
 
+
 2010.05.07: version 0.0.1c
  - URLに全角が混ざっているとfetch_rpc()で例外が発生してしまう不具合修正。
    (fetch_rpc(),set_timer())
@@ -2174,6 +1189,7 @@ if __name__ == "__main__":
  - 異常系でタイマを再設定する場合、タイマ値を変更しないように修正(set_timer(),
    _reset_timer()にkeep_tvalueオプション追加)。
  
+
 2010.01.18: version 0.0.1b
  - タイムアウトリスト取得処理(get_timeout_list())内で、リカバリしたタイマが消える
    不具合修正。
@@ -2181,6 +1197,7 @@ if __name__ == "__main__":
  - 修復処理（check_and_restore()）で、タイママップ(KEY_TIMER_MAP)がなかった場合に
    作成する処理を追加(memcache消去防止)。
  
+
 2010.01.17: version 0.0.1a
  - 修復処理（check_and_restore()）で、リセットタイマ用メモリ領域(KEY_RESET_TIMERS)を
    クリアしてしまう不具合修正。
@@ -2204,5 +1221,7 @@ if __name__ == "__main__":
  - 試作サービスとして公開。
    http://d.hatena.ne.jp/furyu-tei/20100108/gaecron
 
+
+#------------------------------------------------------------------------------
 """
 #■ end of file

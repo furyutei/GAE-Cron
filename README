@@ -1,6 +1,6 @@
 GAE-Cron
 簡易 web cron サービス
-version: 0.01e
+version: 0.02
   powered by Google App Engine
   License: The MIT license
   Copyright (c) 2010 風柳(furyu-tei)
@@ -48,8 +48,9 @@ version: 0.01e
   http://www.python.org:/download/releases/
   から、開発環境にあった 2.5.x 系をダウンロードして、インストールして下さい。
   ※ 2010/05/07 現在、Python 2.5.5 (January 31, 2010) が最新のようです。
-  ※ Python には 2.6.x や、3.x.x 系もありますが、こちらだと GAE SDK が対応していないため、
+  ※ Python には他の系列(2.6.x や、3.x.x 等)もありますが、こちらだと GAE SDK が対応していないため、
     必ず 2.5.x 系を使用するようにして下さい。
+    2.6.xでも動作するという報告もありますが、確証はありません。
   
   GAE SDK は、
   http://code.google.com/intl/en/appengine/downloads.html
@@ -178,26 +179,37 @@ version: 0.01e
 
 
 ■バージョンアップ時の処理
-  ・version 0.01d→0.01eの差分ファイルは以下の通り。
+
+  1. アップロード(デプロイ)用ファイルの上書き
+  
+    version 0.01f→0.02の差分ファイルは以下の通り。
     gaecron/
       +-- README
       +-- gaecron.py
       +-- gaetimer.py
-      +-- template
-      |     +-- gc-top.html
-      |     +-- gc-user-header.html
-      +-- css/
-            +-- gc-common.css
+      +-- cron.yaml
     
-    基本的に、他のファイルはそのままで、上記のファイルを上書きしてデプロイ
-    すればよい。
+    上記のファイルを上書きしてデプロイすること。
+    
     ※旧バージョンでPATH 等を変更している場合は同様の変更を行なうこと。
-    
-  ・version 0.01d以下からのバージョンアップ時には、デプロイ時のアカウントで
-    管理者としてログインし、画面上部にある[全タイマ再設定]ボタンを押す。
+    ※version 0.01e,0.01fからのバージョンアップの場合、上記ファイル以外はそのままでよい。
+      それ以下のversionからの移行は、全ファイルを上書きした方が無難(PATH 等を変更して
+      いる場合は忘れずに同様の変更を行なうこと)。
+  
+  2. 全タイマの再設定
+     
+    管理者権限でログインし、画面左上部にある[全タイマ再設定]ボタンを押す。
+    ※これはどのversionからの移行でも必ず実施すること。
 
 
 ■履歴
+- 2010.10.25: version 0.02
+  ・タイマ処理がより安定するように全面改修(gaetimer.py)。
+    ※全てmemcacheで処理していたものを基本データをdatastoreに持たすように修正。
+  ・タイマ処理の仕様変更に伴い、タイマ関連処理を修正(gaecron.py)。
+  ・リストア処理をgaecron.py(/check_timer)からgaetimer.py(/gaetimer/restore)へと
+    移行(cron.yaml修正)。
+  
 - 2010.10.19: version 0.01f
   ・前回実行時刻と結果が表示されないようになっていたのを修正(gaetimer.py)。
   ・タイマの一部がうまく実行されないことがある不具合修正(gaetimer.py)。
