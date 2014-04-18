@@ -1,0 +1,68 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Style-Type" content="text/css">
+<meta http-equiv="Content-Script-Type" content="text/javascript">
+
+<title>{{aplname_e}} - {{nickname}}さんの設定画面</title>
+
+<link type="text/css" rel="stylesheet" href="{{css}}/gc-common.css" />
+
+<script type="text/javascript" src="{{script}}/gaecron.js" charset="utf-8"></script>
+
+</head>
+
+<body>
+
+<div id="header">
+  {% if is_admin %}
+  <div class="login-menu float-left">
+    <div class="warning">※管理者としてログイン中
+      <form action="{{restore_timer_url}}" method="post" id="form_restore_timer" class="form_confirm" onsubmit="return window.confirm_restore_timer(this)">
+         <input type="hidden" name="return_url" value="{{return_url}}" />
+         <input type="submit" name="restoreTimer" value="全タイマ再設定" />
+      </form>
+    </div>
+  </div>
+  {% endif %}
+  <div class="login-menu">
+  {% if user %}
+    <div class="menu">{{nickname}}さん：<a href="{{logout_url}}">ログアウト</a><a href="{{toppage}}">トップ</a></div>
+  {% else %}
+    <div class="menu"><a href="{{login_url}}">ログイン(Googleアカウント)</a></div>
+  {% endif %}
+  </div><!-- class="login-menu" -->
+</div>
+
+<div id="main">
+
+  <h1><a href="{{toppage}}">{{aplname_e}}</a> - {{nickname}}さんの設定画面
+    <span class="note warning" id="regsiter_container">
+      {% if registered %}
+      <form action="{{unregister_url}}" method="post" id="form_unregister" class="form_confirm" onsubmit="return window.confirm_unregist(this)">
+         <input type="hidden" name="unregister" value="1" />
+         <input type="hidden" name="authkey" value="{{authkey}}" />
+         <input type="submit" name="delete" value="登録削除" />
+      </form>
+      {% else %}
+      <span id="unregistered">(未登録)</span>
+      {% endif %}
+    </span>
+  </h1>
+  <div class="container note">
+    <p>周期指定もしくは定刻指定(<a href="http://ja.wikipedia.org/wiki/Crontab">crontab</a>もどき)が可能です。</p>
+    <div class="info">定刻指定時には、数値指定するほか、<br />
+      <blockquote>
+        <ul class="note">
+          <li>アスタリスク(*)ですべて指定</li>
+          <li>カンマ(,)区切りで複数指定(例：3,6,9)</li>
+          <li>ハイフン(-)区切りで範囲指定(例：9-17)</li>
+          <li>'*/数値'で、数値毎指定(例：*/3 => 0,3,6,..)</li>
+        </ul>
+      </blockquote>
+      のような指定方法が使用できます（例："0 9,18 * * 1-5"→平日の9時と18時）。<br />
+    </div>
+  </div><!-- class="container note" -->
+  <h3>現在時刻：{{curtime}}</h3>

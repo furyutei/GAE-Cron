@@ -1,0 +1,375 @@
+@charset "utf-8";
+
+body {
+	text-align: center;
+}
+
+body * {
+	font-family: 'ヒラギノ角ゴ Pro W3','Hiragino Kaku Gothic Pro','メイリオ',Meiryo,'ＭＳ Ｐゴシック',sans-serif!important;
+	line-height: 120%!important;
+	font-size: 14px;
+}
+
+a {
+	color: navy;
+	text-decoration: underline;
+	font-weight: bolder;
+}
+
+a:link {
+	color: navy;
+}
+
+a:visited {
+	color: gray;
+}
+
+a.menu {
+	margin-left: 12px;
+	font-size: 12px;
+}
+
+p {
+	margin: 0;
+	padding: 4px 0;
+}
+
+blockquote {
+	margin: 2px 4px;
+	padding: 4px 4px;
+	border: double 3px orange;
+	background: lightyellow;
+}
+blockquote,blockquote * {
+	color: navy;
+}
+
+ul.note {
+	margin: 2px 4px;
+	padding: 4px 4px;
+}
+
+ul.note li {
+	font-size: 12px;
+}
+
+
+h1, h2, h3, h4 {
+	clear: both;
+	margin: 8px 0 0 0;
+	padding: 4px;
+	font-weight: bolder;
+	border: solid 1px lightgray;
+}
+
+h1 *, h2 *, h3 *, h4 * {
+	font-weight:bolder;
+}
+
+h1 {
+	background: #eeffee;
+	border: solid 1px gray;
+}
+
+h1, h1 * {
+	font-size: 24px;
+}
+
+h2 {
+	background: #ffeeee;
+	border: solid 1px orange;
+}
+
+h2, h2 * {
+	font-size: 18px;
+}
+
+h3 {
+	background: #ccffcc;
+}
+
+h3, h3 * {
+	font-size: 14px;
+}
+
+h4 {
+	background: #ccccff;
+}
+
+h4, h4 * {
+	font-size: 14px;
+}
+
+h1 a, h2 a, h3 a, h4 a {
+	text-decoration: none;
+}
+
+#header,#main,#footer {
+	clear: both;
+	margin: 0 auto 0 auto;
+	width: 800px;
+	text-align: left;
+}
+#header *,#footer * {
+	vertical-align: middle;
+}
+
+form {
+	margin: 0;
+	padding: 0;
+}
+
+div.container,li.container {
+	clear: both;
+	margin: 0 0;
+	padding: 4px 8px;
+}
+
+ol {
+	margin: 0 0;
+	padding: 8px 32px;
+}
+
+ol li {
+	margin: 0 0;
+	padding; 2px 4px;
+}
+
+form span {
+	font-weight: bolder;
+}
+
+form div {
+	margin: 0 0;
+	padding: 4px 8px;
+}
+
+input.submit {
+	color: navy;
+	font-size: 14px;
+	font-weight: bolder;
+	cursor: pointer;
+	text-align: center;
+	background: #ccee88;
+}
+
+input.text {
+	line-height: 100%;
+	margin-left: 8px;
+	padding: 0 0 4px 2px;
+	width: 120px;
+}
+
+input.url {
+	width:320px;
+}
+
+span.counter {
+	color: navy;
+	margin-left: 4px;
+	margin-right: 4px;
+	font-weight: bolder;
+}
+
+#footer {
+	margin-top: 12px;
+}
+
+#footer,#footer * {
+	font-size: 12px;
+	text-align: right;
+}
+
+#footer a {
+	text-decoration: none;
+	color: gray;
+}
+
+#footer img {
+	margin-right: 4px;
+}
+
+.caution, .warning {
+	color: red!important;
+	font-weight: bolder!important;
+}
+.normal {
+	color: blue!important;
+	font-weight: bolder!important;
+}
+
+.mutter {
+	margin: 0 0;
+	padding: 0 0;
+	color: gray;
+	font-size: 12px;
+}
+
+#header .login-menu {
+	float: right;
+	margin: 4px 8px;
+	text-align: right;
+}
+
+#header .float-left {
+	float: left;
+}
+
+#header .login-menu a {
+	margin-left: 8px;
+}
+
+.note, .note * {
+	margin-left: 8px;
+	font-size: 14px;
+}
+.note a {
+	margin-left: 2px;
+	margin-right: 2px;
+}
+
+div.info {
+	color: brown;
+	margin-left: 16px;
+	font-size: 12px;
+}
+
+.credit, .credit * {
+	color: gray;
+	font-size: 12px;
+}
+
+.text-value-short {
+	font-size: 12px;
+	width: 32px;
+	text-align: center;
+}
+
+.text-value {
+	font-size: 12px;
+	width: 220px;
+}
+
+.text-value-long {
+	font-size: 12px;
+	width: 400px;
+}
+
+
+ul.menu_tabs {
+	margin: 0 0;
+	padding: 0 0;
+	list-style-type: none;
+	list-style-position: outside;
+}
+
+li.menu_tab {
+	float: left;
+	width: 200px;
+	margin: 2px 0 0 8px;
+	padding: 4px 8px 4px 8px;
+	background: #ccccff;
+	text-align: center;
+	font-size: 14px;
+	height: 18px;
+	color: navy;
+}
+
+li.menu_tab * {
+	font-size: 14px;
+	color:navy;
+}
+
+li.selected_tab {
+	width: 200px;
+	font-size: 16px;
+	font-weight :bolder;
+/*	background: #cceecc;*/
+	background: orange;
+}
+
+form.mainform {
+	clear: both;
+	margin: 0 0;
+	padding: 4px 12px;
+/*
+	border: solid 1px lightblue;
+*/
+}
+
+
+.float-left {
+	float: left;
+	margin-right: 8px;
+}
+
+.float-right {
+	float: right;
+	margin-left: 8px;
+	margin-right: 8px;
+}
+
+.float-right input {
+	margin-top: 16px;
+}
+
+.form-param {
+	border: ridge 2px gray;
+}
+
+.odd {
+	background: #ccccee;
+}
+
+.even {
+	background: #eecccc;
+}
+
+div#mask {
+	display:none;
+	position:fixed;
+	left:0;
+	top:0;
+	z-index:10;
+	width:100%;
+	height:100%;
+	background:black;
+	opacity:0.5;
+	MozOpacity:0.5;
+	filter:alpha(opacity=50);
+}
+
+.last_status, .trail_status {
+	color: navy;
+	font-size: 12px;
+}
+
+.form_confirm {
+	display: inline;
+}
+
+.form_confirm * {
+	color: red;
+	font-weight: bolder;
+	background: lightyellow;
+}
+
+.form_confirm input {
+	cursor: pointer;
+}
+
+input.trial {
+	background: lightyellow;
+}
+
+div.version {
+	float: right;
+}
+
+div.version, div.version * {
+	padding: 6px 8px;
+	font-size: 12px;
+	vertical-align: bottom;
+	color: navy;
+}
+

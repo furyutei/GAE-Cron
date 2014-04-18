@@ -1,0 +1,109 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Style-Type" content="text/css">
+<meta http-equiv="Content-Script-Type" content="text/javascript">
+
+<title>{{aplname_e}} - 指定時刻にURLコール</title>
+
+<link type="text/css" rel="stylesheet" href="{{css}}/gc-common.css" />
+
+<script type="text/javascript" src="{{script}}/gaecron.js" charset="utf-8"></script>
+
+</head>
+
+<body>
+
+<div id="header">
+  {% if is_admin %}
+  <div class="login-menu float-left">
+    <div class="warning">※管理者としてログイン中
+      <form action="{{restore_timer_url}}" method="post" id="form_restore_timer" class="form_confirm" onsubmit="return window.confirm_restore_timer(this)">
+       <input type="hidden" name="return_url" value="{{return_url}}" />
+         <input type="submit" name="restoreTimer" value="全タイマ再設定" />
+      </form>
+    </div>
+  </div>
+  {% endif %}
+  <div class="login-menu">
+  {% if user %}
+    <div class="menu">{{nickname}}さん：<a href="{{logout_url}}">ログアウト</a><a href="{{user_base}}/{{user_id}}/">設定画面</a></div>
+  {% else %}
+    <div class="menu"><a href="{{login_url}}">ログイン(Googleアカウント)</a></div>
+  {% endif %}
+  </div><!-- class="login-menu" -->
+</div>
+
+<div id="main">
+
+<h1><a href="{{toppage}}">{{aplname_e}} - 指定時刻にURLコール</a><div class="version">version {{version}}</div></h1>
+
+<h2>なにこれ？</h2>
+<div class="container note">
+  <p>あらかじめ周期とURLを設定しておくと、それに応じた時刻にURLをGETメソッドでコールする、いわゆるweb cronサービスです。<br />
+  無料で使用できますが、Google(Gmail)アカウントが必要です。未取得の場合は<a href="https://www.google.com/accounts/NewAccount?hl=ja">こちら</a>から取得して下さい。<br />
+  </p>
+  <p>phaさんの<a href="http://pha22.net/twitterbot/">プログラミングができなくても作れるTwitter botの作り方</a>で、cronの設定にはまる人が多いという噂なので、<a href="http://m-hook.appspot.com/gc/">試しに作ってみた</a>のが3日で定員になってしまったので、建て増ししてみました。</p>
+</div>
+
+<h2>使い方</h2>
+<div class="container note">
+<ol>
+  <li>Googleアカウントを使って
+  {% if user %}
+     ログイン(現在はログイン済み：<a href="{{logout_url}}">ログアウト</a>)。
+  {% else %}
+     <a href="{{login_url}}">ログイン</a>。
+  {% endif %}
+  </li>
+  {% if user %}
+  <li><a href="{{user_base}}/{{user_id}}/">設定画面</a>上にて、各種設定。</li>
+  {% else %}
+  <li>設定画面上にて、各種設定。</li>
+  {% endif %}
+</ol>
+</div>
+
+
+<h2>注意事項・免責事項</h2>
+<div class="container note">
+<ol>
+  <li>テスト運用中につき、予告無く使用出来なくなる場合が有ります。</li>
+  <li>ご利用は自己責任でお願いします。本サービスの動作および本サービスを使用したことに伴ういかなる弊害についても製作者は責任を負いません。</li>
+  <li>実行時刻の精度には期待しないで下さい。やっつけで作っているので、動作が不安定になる可能性も高いです。</li>
+  <li>現在のところ、ユーザ登録は<span class="counter">先着{{max_user}}名様</span>限定。<br />また、周期設定できるURLは、各ユーザにつき、<span class="counter">{{max_cron}}</span>個までとなっています。
+    <div class="mutter">無料使用時の制限がきついGoogle App Engineではこの程度で限界かも。軽くする方法をご存じの方はご教授下さい。</div>
+  </li>
+</ol>
+</div>
+
+
+<h2>登録ユーザ数</h2>
+<div class="container note">
+  現在<span class="counter">{{user_num}}</span>名。{%if remain_user_num %}あと<span class="counter">{{remain_user_num}}</span>名登録可能。{% else %}定員に達しましたので、現在新既登録は出来ません。{% endif %}
+    <div class="mutter">定員に達した場合、『<a href="http://gaecronclub.appspot.com/">GAE-Cron Club</a>』を覗いてみてください。空きのあるプロバイダが見つかるかも…？</div>
+</div>
+
+{% if is_admin %}
+<h2>登録ユーザリスト</h2>
+<div class="container note">
+  {% for db_gc in db_gc_list %}
+  <span><a href="{{user_base}}/{{db_gc.user_id}}/">{{db_gc.nickname}}</a></span>
+  {% endfor %}
+</div>
+{% endif %}
+
+</div><!-- id="main" -->
+
+<div id="footer">
+<hr />
+<div class="credits">{{credits}}</div>
+</div>
+
+<div id="mask"></div>
+
+</body>
+</html>

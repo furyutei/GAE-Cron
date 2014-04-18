@@ -1,0 +1,240 @@
+GAE-Cron
+簡易 web cron サービス
+version: 0.01e
+  powered by Google App Engine
+  License: The MIT license
+  Copyright (c) 2010 風柳(furyu-tei)
+    http://d.hatena.ne.jp/furyu-tei/
+    http://furyu.tea-nifty.com/annex/
+    http://twitter.com/furyutei
+---------------------------------------------------
+■ なにこれ？
+
+  あらかじめURLとタイマとを設定しておくと、周期的にURLを叩いてくれる(GETメソッドでコールする)、
+  簡易的なweb cronサービスです。
+  
+  使用するには、Google(Gmail)アカウントでログインする必要が有ります。
+  ※Googleアカウントが未取得の場合は、
+    https://www.google.com/accounts/NewAccount?hl=ja
+    取得して下さい(無料です)。
+
+
+■ プロバイダ(サービス提供側)にもなれるの？
+
+  全ソースを公開していますので、Google App Engine 
+  
+  http://code.google.com/intl/ja/appengine/
+  
+  に登録（https://appengine.google.com/）後、ソースをアップロード(デプロイ)することで、どなた
+  でもサービスを動かすことが出来ます。
+  
+  登録時に Google アカウントが必要ですので、予め作成しておいてください。
+  
+  ※これも(リソース制限はありますが、Free Quotaの範囲で)無料で使用できます。
+  ※登録には、メールが送受信できる携帯電話が必要です。
+  
+  GAE-Cronをアップロードしたら、共用の為に『GAE-Cron Club』を通して公開していただけると幸いです。
+  http://gaecronclub.appspot.com/
+  にアクセスし、アプリケーションのデプロイ時に使用したアカウントでログイン後、アプリケーション
+  (GAE-Cron)のトップページを登録する形になります。
+
+
+■ 何が必要なの？
+
+  とりあえず、UTF-8が編集出来るテキストエディタと、Python 2.5.x、それにGAE SDK(GAE/Pythonの
+  開発キット)が必要となります。
+  
+  Python は、
+  http://www.python.org:/download/releases/
+  から、開発環境にあった 2.5.x 系をダウンロードして、インストールして下さい。
+  ※ 2010/05/07 現在、Python 2.5.5 (January 31, 2010) が最新のようです。
+  ※ Python には 2.6.x や、3.x.x 系もありますが、こちらだと GAE SDK が対応していないため、
+    必ず 2.5.x 系を使用するようにして下さい。
+  
+  GAE SDK は、
+  http://code.google.com/intl/en/appengine/downloads.html
+  の Google App Engine SDK for Python を開発環境(Windows、Mac OS X、Linux/Other Platforms）
+  に応じてダウンロードし、インストールして下さい。
+  ※ GAE SDK は頻繁に更新されます。なるべく最新のものをご使用願います。
+
+  GAE/Python の開発やデプロイについての詳細は、
+  □ スタート ガイド: Python
+    http://code.google.com/intl/ja/appengine/docs/python/gettingstarted/
+  □ TwitterBOTを作る手順メモ
+    http://d89.s41.xrea.com/twitter/howtomake_bot.html
+  □Google App Engineへの登録と開発環境のセットアップ(Python編)
+    http://d.hatena.ne.jp/furyu-tei/20100115/gaeregister
+  □ 『GAE-Cron』のソース＆サービス登録サイト公開
+    http://d.hatena.ne.jp/furyu-tei/20100115/gaecronclub
+  などを参照して下さい。
+
+
+■ ファイル構成
+  GAE-Cron のファイル構成は以下のようになっています。
+  
+  gaecron/
+    +-- README
+    +-- app.yaml
+    +-- cron.yaml
+    +-- gaecron.yaml
+    +-- gaecron.py
+    +-- gaetimer.py
+    +-- index.yaml
+    +-- template
+    |     +-- gc-top.html
+    |     +-- gc-user-header.html
+    |     +-- gc-user-form.html
+    |     +-- gc-user-footer.html
+    |     +-- status.html
+    +-- css/
+    |     +-- gc-common.css
+    |     +-- status.css
+    +-- script
+    |     +-- gaecron.js
+    +-- image/
+          +-- favicon.ico
+          +-- profile_s.gif
+          +-- appengine-noborder-120x30.gif
+  
+  後で説明する修正箇所の修正が完了したら、ネット上にアップロード(デプロイ)します。
+  
+  kWindows XPの場合、例えば
+  C:\GAE\gaecron
+  に展開したとすると、Google App Engine Launcher の
+  File → Add Existing Application... Ctrl+Shift+N の Application PATH に
+  C:\GAE\gaecron
+  を指定してやり、その後、[Deploy]を押してアップロード(デプロイ)します。
+  
+  ※Google App Engine Launcher はデフォルトで
+    C:\Program Files\Google\google_appengine\launcher\GoogleAppEngineLauncher.exe
+    にあります（デスクトップ上にショートカットも出来ると思います）。
+
+
+■ 変更必須の箇所
+
+  1. app.yaml
+    一番最初の行が
+    application: gaecron
+    となっていますが、この'gaecron' を自分でGoogleから取得したアプリケーション名(Application 
+    Identifier:appid)に変更して下さい。
+    
+    基本的にはこれだけを変更後、Google App Engine にデプロイすれば動作開始します。
+    http://(appid).appspot.com/
+    にアクセスすることで、GAE-Cronのトップページにアクセス出来ます。
+
+
+■ 登録可能数を変更したい場合
+
+  1. gaecron.yaml
+    # MaxUser: 最大ユーザ数
+    MaxUser : 50
+    及び
+    # MaxTimerPerUser: 1ユーザあたりの最大タイマ数
+    MaxTimerPerUser : 5
+    を適当に変更して下さい。
+    
+    ただし、増やすとそれだけ負荷が高くなり、CPUリソースを使い切って "Over Quota" となって
+    しばらく何もできなくなる場合もあるので、充分ご注意下さい。
+  
+
+■ PATH を変更したい場合
+
+  他のアプリと併用するときなど、トップページのパスを変更したい場合に修正する箇所を示します。
+  ここでは、トップページを
+  http://(appid).appspot.com/gc/
+  に変更する場合を例に説明します。
+  
+  1. app.yaml
+    - url: /(check|restore)_timer.*
+      script: gaecron.py
+      login: admin
+    とある箇所を
+    - url: /gc/(check|restore)_timer.*
+      script: gaecron.py
+      login: admin
+    に、
+    - url: /.*
+      script: gaecron.py
+    とある箇所を
+    - url: /gc/.*
+      script: gaecron.py
+    に、それぞれ変更します。
+
+  2. cron.yaml
+    - description: check and restore timer
+      url: /check_timer
+      schedule: every 30 minutes
+    とある箇所を
+    - description: check and restore timer
+      url: /gc/check_timer
+      schedule: every 30 minutes
+    に変更します。
+  
+  3. gaecron.py
+    PATH_BASE = u''               # 基準となるPATH(u''はルート)
+    とある箇所を、
+    PATH_BASE = u'/gc'            # 基準となるPATH
+    に変更します。
+
+
+■バージョンアップ時の処理
+  ・version 0.01d→0.01eの差分ファイルは以下の通り。
+    gaecron/
+      +-- README
+      +-- gaecron.py
+      +-- gaetimer.py
+      +-- template
+      |     +-- gc-top.html
+      |     +-- gc-user-header.html
+      +-- css/
+            +-- gc-common.css
+    
+    基本的に、他のファイルはそのままで、上記のファイルを上書きしてデプロイ
+    すればよい。
+    ※旧バージョンでPATH 等を変更している場合は同様の変更を行なうこと。
+    
+  ・version 0.01d以下からのバージョンアップ時には、デプロイ時のアカウントで
+    管理者としてログインし、画面上部にある[全タイマ再設定]ボタンを押す。
+
+
+■履歴
+- 2010.10.19: version 0.01f
+  ・前回実行時刻と結果が表示されないようになっていたのを修正(gaetimer.py)。
+  ・タイマの一部がうまく実行されないことがある不具合修正(gaetimer.py)。
+  ・バージョン番号変更(gaecron.py)。
+  ・互換性のために残しておいた古い処理をコールしないように設定(cron.yaml)。
+  
+- 2010.06.19: version 0.01e
+  ・CPU負荷軽減の試み。class GAE_Timer2ndを追加し、処理を見直して、冗長な
+    部分を整理、特に timercycle 部分高速化(gaetimer.py)。
+  ・トップページにバージョン表示追加(gaecron.py,、gc-top.html、gc-common.css)。
+  ・管理者画面の[全タイマ再設定]ボタンの位置を右上→左上に変更追加。
+    (gc-top.html、gc-user-header.html、gc-common.css)。
+  ・その他、不具合修正。
+
+- 2010.05.21: version 0.01d
+  ・CPU負荷軽減の試み(gaecron.py, gaetimer.py)。
+  ・上記に伴うタイマ再設定ボタンを管理者画面に追加(gc-top.html、gc-user-header.html、
+    gaecron.js、gc-common.css)。
+  ・その他、不具合修正。
+
+- 2010.05.07: version 0.01c
+  ・gaetimer.py の不具合修正（詳細はソース末尾の更新履歴参照）。
+  ・設定画面でURLの試行が可能なように修正（gaecron.py、script/gaecron.js、
+    css/gc-common.css、template/gc-user-form.html）。
+  
+- 2010.01.18: version 0.01b
+  ・gaetimer.py の不具合修正（詳細はソース末尾の更新履歴参照）。
+  ・設定画面で登録／更新失敗時に通知するように修正(script/gaecron.js)。
+
+- 2010.01.18: version 0.01a
+  ・Pythonをインストールしていないとデプロイ出来ない旨のご指摘があったので記述修正。
+  ・gaecron.py、gaetimer.py の不具合修正（詳細は各ソース末尾の更新履歴参照）。
+
+- 2010.01.15: version 0.01
+  ・ソース公開。
+    http://d.hatena.ne.jp/furyu-tei/20100115/gaecron
+
+- 2010.01.08: version ----
+  ・試験的にサービス公開（http://m-hook.appspot.com/gc/）
+    http://d.hatena.ne.jp/furyu-tei/20100108/gaecron

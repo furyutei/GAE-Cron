@@ -1,0 +1,39 @@
+application: gaecron
+version: 1
+runtime: python
+api_version: 1
+
+inbound_services:
+- mail
+
+handlers:
+- url: /script
+  static_dir: script
+
+- url: /css
+  static_dir: css
+
+- url: /image
+  static_dir: image
+
+- url: /(.*\.(gif|png|jpg|ico))
+  static_files: image/\1
+  upload: image/(.*\.(gif|png|jpg|ico))
+
+- url: /gaetimer/timeout.*
+  script: gaetimer.py
+  
+- url: /gaetimer/.*
+  script: gaetimer.py
+  login: admin
+
+- url: /(check|restore)_timer.*
+  script: gaecron.py
+  login: admin
+
+- url: /_ah/mail/gaecron.+
+  script: gaecron.py
+  login: admin
+
+- url: /.*
+  script: gaecron.py

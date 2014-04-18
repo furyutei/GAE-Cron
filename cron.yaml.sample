@@ -1,0 +1,9 @@
+cron:
+- description: gaetimer(cycle)
+#  url: /gaetimer/timercycle
+  url: /gaetimer/timercycle?2nd=1
+  schedule: every 1 minutes
+
+- description: check and restore timer
+  url: /check_timer
+  schedule: every 30 minutes

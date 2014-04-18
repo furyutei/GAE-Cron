@@ -1,0 +1,25 @@
+  {% for timerinfo in timerinfos %}
+    <form action="{{action}}" method="post" class="mainform" onsubmit="return window.postcron(this)">
+      <div class="form-param {{timerinfo.cname}}">
+        <span class="label">呼出URL({{timerinfo.cnt}})：</span><input type="text" name="timerinfo_url" value="{{timerinfo.url}}" class="text-value-long" />
+        <input type="button" name="trial" value="試行" class="submit trial" onclick="window.trial(this.form)"/>
+        <input type="radio" name="valid" value="0" {% if not timerinfo.valid %}checked="checked"{% endif %} class="button" /><span {% if not timerinfo.valid %}class="warning"{% endif %}>無効</span>
+        <input type="radio" name="valid" value="1" {% if timerinfo.valid %}checked="checked"{% endif %} class="button" /><span {% if timerinfo.valid %}class="normal"{% endif %}>有効</span>
+        <input type="submit" name="submit" value="{% if timerinfo.exist %}更新{% else %}登録{% endif %}" class="submit" />
+        <div class="trail_status"></div>
+        <div class="form-param-part">
+          <input type="radio" name="kind" value="cycle" {% ifequal timerinfo.kind 'cycle' %}checked="checked"{% endifequal %} class="button" onclick="suspend(this,'cron')"/>周期：<input type="text" name="cycle" value="{{timerinfo.cycle}}" class="text-value-short" />分<br />
+          <input type="radio" name="kind" value="cron" {% ifequal timerinfo.kind 'cron' %}checked="checked"{% endifequal %} class="button" onclick="suspend(this,'cycle')"/>定刻：
+            <input type="text" name="min" value="{{timerinfo.min}}" class="text-value-short" />分(0～59)
+            <input type="text" name="hour" value="{{timerinfo.hour}}" class="text-value-short" />時(0～23)
+            <input type="text" name="day" value="{{timerinfo.day}}" class="text-value-short" />日(1～31)
+            <input type="text" name="month" value="{{timerinfo.month}}" class="text-value-short" />月(1～12)
+            <input type="text" name="wday" value="{{timerinfo.wday}}" class="text-value-short" />曜日(0:日曜～6:土曜)　
+            UTC<input type="text" name="tz_hours" value="{{timerinfo.tz_hours}}" class="text-value-short" />時間<br />
+        </div>
+      <div class="last_status">■最終起動：{{timerinfo.last_timeout}} 結果：{{timerinfo.last_result}} ※次回予定：{{timerinfo.next_time}}</div>
+      </div>
+      <input type="hidden" name="no" value="{{timerinfo.no}}" />
+      <input type="hidden" name="authkey" value="{{authkey}}" />
+    </form><!-- class="mainform" -->
+  {% endfor %}
