@@ -4,23 +4,22 @@
 gaetimer.py: Timer Library and Process for Google App Engine
 
 License: The MIT license
-Copyright (c) 2010 furyu-tei
+Copyright (c) 2010-2014 furyu-tei
 """
 
 __author__ = 'furyutei@gmail.com'
-__version__ = '0.0.2a'
+__version__ = '0.0.3'
 
 import logging,re
 import time,datetime
 import urllib
-import wsgiref.handlers
-#import hashlib
+#import wsgiref.handlers
 
 from google.appengine.ext import db
-from google.appengine.ext import webapp
+#from google.appengine.ext import webapp
+import webapp2 as webapp
 from google.appengine.api import urlfetch
 from google.appengine.api import memcache
-#from google.appengine.api.labs import taskqueue
 from google.appengine.api.taskqueue import taskqueue
 from google.appengine.api.urlfetch import InvalidURLError,DownloadError,ResponseTooLargeError
 from google.appengine.api import quota
@@ -64,6 +63,7 @@ PATH_CLEARALL        = PATH_BASE % (u'/clearall')
 PATH_SET_TIMER       = PATH_BASE % (u'/settimer')
 PATH_REL_TIMER       = PATH_BASE % (u'/reltimer')
 PATH_DEFAULT_TIMEOUT = PATH_BASE % (u'/timeout') # for test
+PATH_WARMUP          = u'/_ah/warmup'
 
 TIMER_NAMESPACE_BASE = 'gae_timer'
 TIMER_NAMESPACE_DEFAULT = TIMER_NAMESPACE_BASE
@@ -1322,30 +1322,68 @@ class reltimer(webapp.RequestHandler):
 #} // end of class reltimer()
 
 
-#{ // def main()
-def main():
-  logging.getLogger().setLevel(DEBUG_LEVEL)
-  application=webapp.WSGIApplication([
-    (PATH_CYCLE          , timercycle    ),
-    (PATH_SHOWLIST       , showlist      ),
-    (PATH_SHOWLIST_SHORT , showlist_short),
-    (PATH_SHOWCOUNTER    , showcounter   ),
-    (PATH_RESTORE        , restore       ),
-    (PATH_CLEARALL       , clearall      ),
-    (PATH_SET_TIMER      , settimer      ),
-    (PATH_REL_TIMER      , reltimer      ),
-    (PATH_DEFAULT_TIMEOUT, def_timeout   ),
-  ],debug=DEBUG_FLAG)
-  wsgiref.handlers.CGIHandler().run(application)
-#} // end of def main()
+class warmup(webapp.RequestHandler): #{
+  def _common(self):
+    (req,rsp)=(self.request,self.response)
+    (rheaders,rcookies)=(req.headers,req.cookies)
+    
+    rsp.set_status(200)
+    rsp.headers['Content-Type']=CONTENT_TYPE_PLAIN
+    rsp.out.write(u'')
 
-if __name__ == "__main__":
-  main()
+  def get(self):
+    self._common()
+
+  def post(self):
+    self._common()
+
+#} // end of class warmup()
+
+
+"""
+##{ // def main()
+#def main():
+#  logging.getLogger().setLevel(DEBUG_LEVEL)
+#  application=webapp.WSGIApplication([
+#    (PATH_CYCLE          , timercycle    ),
+#    (PATH_SHOWLIST       , showlist      ),
+#    (PATH_SHOWLIST_SHORT , showlist_short),
+#    (PATH_SHOWCOUNTER    , showcounter   ),
+#    (PATH_RESTORE        , restore       ),
+#    (PATH_CLEARALL       , clearall      ),
+#    (PATH_SET_TIMER      , settimer      ),
+#    (PATH_REL_TIMER      , reltimer      ),
+#    (PATH_DEFAULT_TIMEOUT, def_timeout   ),
+#  ],debug=DEBUG_FLAG)
+#  wsgiref.handlers.CGIHandler().run(application)
+##} // end of def main()
+#
+#if __name__ == "__main__":
+#  main()
+"""
+
+logging.getLogger().setLevel(DEBUG_LEVEL)
+app = webapp.WSGIApplication([
+  (PATH_CYCLE          , timercycle    ),
+  (PATH_SHOWLIST       , showlist      ),
+  (PATH_SHOWLIST_SHORT , showlist_short),
+  (PATH_SHOWCOUNTER    , showcounter   ),
+  (PATH_RESTORE        , restore       ),
+  (PATH_CLEARALL       , clearall      ),
+  (PATH_SET_TIMER      , settimer      ),
+  (PATH_REL_TIMER      , reltimer      ),
+  (PATH_DEFAULT_TIMEOUT, def_timeout   ),
+  (PATH_WARMUP         , warmup        ),
+],debug=DEBUG_FLAG)
 
 """
 #==============================================================================
 # 更新履歴
 #==============================================================================
+2014.04.20: version 0.0.3
+ - 使用 runtime を Python 2.5 から Python 2.7 へ変更。
+
+
 2011.05.15: version 0.0.2a
  - パフォーマンス改善のため、memcacheアクセスで、
      書き込み時：object/dictからunicode文字列に変換

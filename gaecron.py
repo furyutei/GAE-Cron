@@ -4,11 +4,11 @@
 gaecron.py: Web Cron Service on Google App Engine
 
 License: The MIT license
-Copyright (c) 2010 furyu-tei
+Copyright (c) 2010-2014 furyu-tei
 """
 
 __author__ = 'furyutei@gmail.com'
-__version__ = '0.0.2a'
+__version__ = '0.0.3'
 
 
 import logging
@@ -16,29 +16,23 @@ import yaml
 import os,cgi,re,urllib
 import time,datetime
 import random,hashlib
-#import hmac,base64,sha
-import wsgiref.handlers
-
-"""
-# use_library()だと0.96では変わらず警告が出る→appengine_config.pyで対応
-#from google.appengine.dist import use_library
-##use_library('django', '1.2')
-#use_library('django', '0.96')
-"""
+#import wsgiref.handlers
+import json
 
 from google.appengine.ext import db
-from google.appengine.ext import webapp
+#from google.appengine.ext import webapp
+import webapp2 as webapp
 from google.appengine.api import users
 from google.appengine.api import urlfetch
 from google.appengine.api import memcache
 from google.appengine.api import mail
-#from google.appengine.api.labs import taskqueue
 from google.appengine.api.taskqueue import taskqueue
-from google.appengine.ext.webapp import template
+#from google.appengine.ext.webapp import template
+import jinja2
 from google.appengine.ext.webapp.mail_handlers import InboundMailHandler
- 
-from django.utils import simplejson
 
+#from django.utils import simplejson
+ 
 from gaetimer import GAE_Timer,timer_maintenance,timer_initialize,set_maintenance_mode
 from gaetimer import fetch_rpc
 
@@ -98,7 +92,7 @@ PATH_STOP_REPORT = PATH_BASE + u'/stop_report'
 
 PATH_DIARY_BASE = "http://d.hatena.ne.jp/furyu-tei"
 
-DIR_TEMPLATE = 'template/'
+DIR_TEMPLATE = 'template'
 
 TEMPLATE_TOP = u'gc-top.html'
 TEMPLATE_USER_HEADER = u'gc-user-header.html'
@@ -106,11 +100,11 @@ TEMPLATE_USER_FORM = u'gc-user-form.html'
 TEMPLATE_USER_FOOTER = u'gc-user-footer.html'
 TEMPLATE_STATUS = u'status.html'
 
-HTML_CREDITS="""
+HTML_CREDITS = u"""
 Presented by <a href="%(diary)s/"><img src="%(image)s/profile_s.gif" border="0" border="0" />風柳</a>
 【<a href="%(diary)s/20100115/gaecronclub">関連記事</a>】
-<a href="http://code.google.com/intl/ja/appengine/"><img src="%(image)s/appengine-noborder-120x30.gif" alt="Powered by Google App Engine" title="Powered by Google App Engine" border="0" /></a>
-""" % {'image':PATH_IMAGE,'diary':PATH_DIARY_BASE}
+<a href="https://developers.google.com/appengine/"><img src="%(image)s/appengine-noborder-120x30.gif" alt="Powered by Google App Engine" title="Powered by Google App Engine" border="0" /></a>
+""" % dict(image=PATH_IMAGE, diary=PATH_DIARY_BASE)
 
 CONTENT_TYPE_HTML = 'text/html; charset=utf-8'
 CONTENT_TYPE_PLAIN  = 'text/plain; charset=utf-8'
@@ -141,13 +135,14 @@ timedelta = datetime.timedelta
 
 
 #{ // datastore
-class dbGaeCronSession(db.Expando):
+class dbGaeCronSession(db.Expando): #{
   user = db.UserProperty()
   authkey = db.StringProperty()
   date = db.DateTimeProperty(auto_now_add=True)
+#} // end of class dbGaeCronSession()
 
 
-class dbGaeCronUser(db.Expando):
+class dbGaeCronUser(db.Expando): #{
   user = db.UserProperty()
   user_id = db.StringProperty()
   email = db.StringProperty()
@@ -172,20 +167,20 @@ class dbGaeCronUser(db.Expando):
       'tz_hours':9,
     },
     'tid':'...',        # timer id
-    #'ns':'...',         # namespace of timer
   },...}
   """
   update_user = db.UserProperty(auto_current_user=True)
   update = db.DateTimeProperty(auto_now=True)
   date = db.DateTimeProperty(auto_now_add=True)
+#} // end of class dbGaeCronUser()
 
 
-class dbGaeCronReportInfo(db.Expando):
+class dbGaeCronReportInfo(db.Expando): #{
   dest_url = db.StringProperty()
   dest_id = db.StringProperty()
   authkey = db.StringProperty()
   date = db.DateTimeProperty(auto_now_add=True)
-
+#} // end of class dbGaeCronReportInfo()
 
 #} // end of datastore
 
@@ -234,7 +229,8 @@ def logerr(*args):
 def load_config():
   global MAX_USER
   global MAX_TIMER_PER_USER
-    
+  global load_config
+  
   flg = False
   while True:
     try:
@@ -260,6 +256,8 @@ def load_config():
       max_timer = 0
     if 0<max_timer:
       MAX_TIMER_PER_USER = max_timer
+    
+    load_config = lambda: True
     
     flg = True
     break
@@ -362,6 +360,12 @@ def common_init(self):
 
 
 #{ // def render_output_html()
+JINJA2_ENV = jinja2.Environment(
+  loader = jinja2.FileSystemLoader(os.path.join(os.path.dirname(__file__), DIR_TEMPLATE)),
+  extensions = ['jinja2.ext.autoescape'],
+  autoescape = True
+)
+
 def render_output_html(self,status_code,template_filename,template_values=None,render_only=False):
   if not render_only:
     rsp = self.response
@@ -371,36 +375,38 @@ def render_output_html(self,status_code,template_filename,template_values=None,r
   if not template_values:
     template_values = {}
   
-  template_values.update({
-    'toppage': PATH_TOP,
-    'aplname': NAME_APPLICATION_J,
-    'aplname_e': NAME_APPLICATION_E,
-    'credits': HTML_CREDITS,
-    'max_user': MAX_USER,
-    'max_cron': MAX_TIMER_PER_USER,
-    'urlroot': self.urlroot,
-    'urlbase': self.urlbase,
-    'action': self.action,
-    'login_url': self.login_url,
-    'logout_url': self.logout_url,
-    'user': self.user,
-    'is_admin': self.is_admin,
-    'user_base':PATH_USER_BASE,
-    'image': PATH_IMAGE,
-    'css': PATH_CSS,
-    'script': PATH_SCRIPT,
-    'html': PATH_HTML,
-    'version': __version__,
-  })
+  template_values.update(dict(
+    toppage = PATH_TOP,
+    aplname = NAME_APPLICATION_J,
+    aplname_e = NAME_APPLICATION_E,
+    credits = HTML_CREDITS,
+    max_user = MAX_USER,
+    max_cron = MAX_TIMER_PER_USER,
+    urlroot = self.urlroot,
+    urlbase = self.urlbase,
+    action = self.action,
+    login_url = self.login_url,
+    logout_url = self.logout_url,
+    user = self.user,
+    is_admin = self.is_admin,
+    user_base = PATH_USER_BASE,
+    image = PATH_IMAGE,
+    css = PATH_CSS,
+    script = PATH_SCRIPT,
+    html = PATH_HTML,
+    version = __version__,
+  ))
   if self.user:
-    template_values.update({
-      'email': self.user.email(),
-      'nickname': self.user.nickname(),
-      'user_id': self.user.user_id(),
-    })
+    template_values.update(dict(
+      email = self.user.email(),
+      nickname = self.user.nickname(),
+      user_id = self.user.user_id(),
+    ))
   
-  template_file = os.path.join(self.tplpath,template_filename)
-  output_html = template.render(template_file,template_values)
+  #template_file = os.path.join(self.tplpath,template_filename)
+  #output_html = template.render(template_file,template_values)
+  template = JINJA2_ENV.get_template(template_filename)
+  output_html = template.render(template_values)
   
   if not render_only:
     rsp.headers['Content-Type'] = CONTENT_TYPE_HTML
@@ -450,11 +456,11 @@ def prn_html_status(self,status_code=None,explain=None,message=u'',url_redirect=
   else:
     meta_refresh = u''
   
-  template_values = {
-    'html_status': cgi_escape(html_status),
-    'meta_refresh': meta_refresh,
-    'message': cgi_escape(message),
-  }
+  template_values = dict(
+    html_status = cgi_escape(html_status),
+    meta_refresh = meta_refresh,
+    message = cgi_escape(message),
+  )
   render_output_html(self,status_code,TEMPLATE_STATUS,template_values)
   
 #} // end of def prn_html_status()
@@ -466,6 +472,7 @@ def prn_html(self,template_filename=None,template_values=None,status_code=None,e
   if url_redirect and quick_redirect:
     if status_code:
       rsp.set_status(int(status_code))
+    if isinstance(url_redirect, unicode): url_redirect = url_redirect.encode('utf-8','ignore')
     self.redirect(url_redirect)
     return
   
@@ -547,7 +554,7 @@ def getGaeCronUser(user=None,db_key=None,db_id=None,user_id=None,email=None,crea
         nickname = user.nickname(),
         authkey = authkey,
         cookie = db.Text(cookie),
-        croninfo = db.Text(simplejson.dumps({})),
+        croninfo = db.Text(json.dumps({})),
       )
       db_gc.put()
       return db_gc
@@ -702,13 +709,13 @@ class toppage(webapp.RequestHandler):
     else:
       db_gc_list = []
     
-    tvalues = {
-      'user_num': current_user_num,
-      'remain_user_num': remain_user_num,
-      'db_gc_list': db_gc_list,
-      'restore_timer_url': PATH_RESTORE_TIMER,
-      'return_url':req.url,
-    }
+    tvalues = dict(
+      user_num = current_user_num,
+      remain_user_num = remain_user_num,
+      db_gc_list = db_gc_list,
+      restore_timer_url = PATH_RESTORE_TIMER,
+      return_url = req.url,
+    )
     prn_html(self,TEMPLATE_TOP,tvalues)
     
 #} // end of class toppage()
@@ -745,17 +752,13 @@ class userpage(webapp.RequestHandler):
       _valid = cron_info['valid']
       tid = cron_info['tid']
       
-      #gae_timer=GAE_Timer()
-      
       if 0<_valid and tid:
-        #last_status = get_last_status(timerid=tid)
         last_status = gae_timer.get_last_status(timerid=tid)
         last_timeout = last_status['last_timeout']
         last_result = last_status['last_result']
         if not last_timeout:
           last_timeout = _noresult
           last_result = _noresult
-        #next_time = get_next_time(timerid=tid)
         next_time = gae_timer.get_next_time(timerid=tid)
         if not next_time:
           next_time = _noresult
@@ -818,14 +821,14 @@ class userpage(webapp.RequestHandler):
       db_gcs = getGaeCronSession(user,create=True)
       authkey = db_gcs.authkey
     
-    tvalues = {
-      'unregister_url': self.action,
-      'registered': registered,
-      'authkey': authkey,
-      'curtime': (utcnow()+timedelta(hours=+9)).strftime('%Y/%m/%d %H:%M(JST)'),
-      'restore_timer_url': PATH_RESTORE_TIMER,
-      'return_url':req.url,
-    }
+    tvalues = dict(
+      unregister_url = self.action,
+      registered = registered,
+      authkey = authkey,
+      curtime = (utcnow()+timedelta(hours=+9)).strftime('%Y/%m/%d %H:%M(JST)'),
+      restore_timer_url = PATH_RESTORE_TIMER,
+      return_url = req.url,
+    )
     
     if registered and req.get('unregister')==u'1':
       status_code = 400
@@ -833,9 +836,7 @@ class userpage(webapp.RequestHandler):
         if req.get('authkey') != authkey:
           logerr('authkey failure: %s vs %s' % (req.get('authkey',u''),authkey))
           break
-        cron_info_dict = simplejson.loads(db_gc.croninfo)
-        #dbDelete(db_gc)
-        #gae_timer = GAE_Timer()
+        cron_info_dict = json.loads(db_gc.croninfo)
         rel_timer = gae_timer.rel_timer
         for cron_info in cron_info_dict.values():
           tid = cron_info.get('tid')
@@ -881,9 +882,8 @@ class userpage(webapp.RequestHandler):
         db_gc.email = user.email()
         db_gc.nickname = user.nickname()
         
-        cron_info_dict = simplejson.loads(db_gc.croninfo)
+        cron_info_dict = json.loads(db_gc.croninfo)
         
-        #gae_timer = GAE_Timer()
         set_timer = gae_timer.set_timer
         rel_timer = gae_timer.rel_timer
         
@@ -917,7 +917,6 @@ class userpage(webapp.RequestHandler):
         except:
           _tz_hours = 9
         
-        #_tid = None
         if 0<_valid:
           _tid=u'%s-%s-%s' % (NAMESPACE,str(db_gc.key().id()),str(no))
           if _kind == 'cycle':
@@ -937,10 +936,9 @@ class userpage(webapp.RequestHandler):
           cycle_info=dict(cycle=_cycle),
           cron_info=dict(min=_min,hour=_hour,day=_day,month=_month,wday=_wday,tz_hours=_tz_hours),
           tid=_tid,
-          #ns=namespace,
         )
         
-        db_gc.croninfo = db.Text(simplejson.dumps(cron_info_dict))
+        db_gc.croninfo = db.Text(json.dumps(cron_info_dict))
         dbPut(db_gc)
         
         if flg_create:
@@ -989,7 +987,7 @@ class userpage(webapp.RequestHandler):
     timerinfos = []
     
     if db_gc:
-      cron_info_dict = simplejson.loads(db_gc.croninfo)
+      cron_info_dict = json.loads(db_gc.croninfo)
     else:
       cron_info_dict = {}
     
@@ -1068,151 +1066,6 @@ class checkTimer(webapp.RequestHandler):
     
     rsp.set_status(200)
     loginfo(pre_str+u'start')
-    """
-    #max_num = MAX_RESTORE_NUM_PER_CYCLE
-    #last_id = req.get('last_id')
-    #if not last_id:
-    #  db_gc_list = dbGaeCronUser.all().order('date').fetch(max_num)
-    #  cnt = 0
-    #  tcnt = 0
-    #else:
-    #  last_time = isofmt_to_datetime(req.get('last_time'))
-    #  log(' last_id=%s' % (last_id))
-    #  log(' last_time=%s' % (req.get('last_time')))
-    #  db_gc_list = dbGaeCronUser.all().filter('date >=', last_time).order('date').fetch(max_num)
-    #  cnt = int(req.get('cnt'),0)
-    #  tcnt = int(req.get('tcnt'),0)
-    #
-    #timer_maintenance()
-    #
-    #gae_timer = GAE_Timer()
-    #set_timer = gae_timer.set_timer
-    #rel_timer = gae_timer.rel_timer
-    #
-    #for db_gc in db_gc_list:
-    #  db_gc_id = str(db_gc.key().id())
-    #  if db_gc_id == last_id:
-    #    continue
-    #  
-    #  cnt += 1
-    #  email = db_gc.email
-    #  loginfo(u'%d: %s  %s' % (cnt,email,db_gc.date))
-    #  
-    #  flg_update = False
-    #  cron_info_dict = simplejson.loads(db_gc.croninfo)
-    #  
-    #  #gae_timer = GAE_Timer()
-    #  #set_timer = gae_timer.set_timer
-    #  #rel_timer = gae_timer.rel_timer
-    #  
-    #  for (no,cron_info) in cron_info_dict.items():
-    #  
-    #    flg_set = False
-    #    flg_rel_comp = False
-    #    
-    #    timer = None
-    #    tid = cron_info['tid']
-    #    
-    #    if tid:
-    #      gae_timer.rel_timer(tid)
-    #      flg_rel_comp = True
-    #      flg_set = True
-    #      
-    #    if cron_info['valid']==0:
-    #      if timer:
-    #        if not flg_rel_comp:
-    #          rel_timer(tid)
-    #        cron_info['tid'] = None
-    #        flg_update = True
-    #      continue
-    #    
-    #    _url = cron_info['url']
-    #    if cron_info['kind'] == 'cycle':
-    #      _cycle = cron_info['cycle_info']['cycle']
-    #      _crontime = None
-    #    else:
-    #      _cycle = None
-    #      _c = cron_info['cron_info']
-    #      _crontime = ' '.join([_c['min'],_c['hour'],_c['day'],_c['month'],_c['wday']])
-    #    
-    #    while True:
-    #      if not timer:
-    #        flg_set = True
-    #        break
-    #      
-    #      if timer.user_id != email or timer.user_info != no:
-    #        # perhaps BUG
-    #        break
-    #      
-    #      if timer.url != _url:
-    #        flg_set = True
-    #        break
-    #      
-    #      if _cycle:
-    #        if timer.minutes != _cycle:
-    #          flg_set = True
-    #          break
-    #      else:
-    #        if timer.crontime != _crontime:
-    #          flg_set = True
-    #          break
-    #      break
-    #    
-    #    if not flg_set:
-    #      continue
-    #    
-    #    tvalue = None
-    #    if timer:
-    #      if flg_rel_comp:
-    #        tvalue = timer.timeout
-    #      else:
-    #        rel_timer(tid)
-    #    
-    #    if _cycle:
-    #      tid = set_timer(minutes=_cycle,url=_url,user_id=email,user_info=no,tvalue=tvalue)
-    #    else:
-    #      tid = set_timer(crontime=_crontime,url=_url,user_id=email,user_info=no,tz_hours=_c['tz_hours'],tvalue=tvalue)
-    #    
-    #    if tid:
-    #      tcnt += 1
-    #      loginfo(u'  timer(No.%d) update (timerid=%s)' % (1+int(no),tid))
-    #    else:
-    #      cron_info['valid'] = 0
-    #      logerr(u'  timer(No.%d) set error' % (1+int(no)))
-    #    
-    #    cron_info['tid'] = tid
-    #    
-    #    flg_update = True
-    #  
-    #  if flg_update:
-    #    db_gc.croninfo = db.Text(simplejson.dumps(cron_info_dict))
-    #    dbPut(db_gc)
-    #    logerr(u' => update user datastore')
-    #  else:
-    #    log(u' => no update')
-    #  
-    #  last_id = db_gc_id
-    #  last_time = db_gc.date
-    #
-    #if max_num<=len(db_gc_list):
-    #  str_rsp = pre_str+u'continue'
-    #  url=PATH_CHECK_TIMER+'?last_id=%s&last_time=%s&cnt=%d&tcnt=%d' % (urllib.quote(last_id),urllib.quote(datetime_to_isofmt(last_time)),cnt,tcnt)
-    #  log(u'call:"%s"' % (url))
-    #  for ci in range(3):
-    #    try:
-    #      taskqueue.add(url=url,method='GET',headers={'X-AppEngine-TaskRetryCount':0})
-    #      break
-    #    except Exception, s:
-    #      str_rsp = pre_str+u'taskqueue error: %s' % (str(s))
-    #      pass
-    #    time.sleep(1)
-    #else:
-    #  str_rsp = pre_str+u'end'
-    #  log('set timer (success) number=%d' % (tcnt))
-    #  reportServiceInfos()
-    #
-    #loginfo(str_rsp)
-    """
     str_rsp=pre_str+u'/check_timerは廃止され、機能は/gaetimer/restoreに移行されました。cron.yamlの設定を変更して下さい。'
     loginfo(str_rsp)
     rsp.headers['Content-Type'] = CONTENT_TYPE_PLAIN
@@ -1261,23 +1114,17 @@ class restoreTimer(webapp.RequestHandler):
       email = db_gc.email
       loginfo(u'%d: %s  %s' % (cnt,email,db_gc.date))
       
-      cron_info_dict = simplejson.loads(db_gc.croninfo)
-      
-      #gae_timer = GAE_Timer()
-      #set_timer = gae_timer.set_timer
-      #rel_timer = gae_timer.rel_timer
+      cron_info_dict = json.loads(db_gc.croninfo)
       
       for (no,cron_info) in cron_info_dict.items():
         tid = None
         if cron_info['valid']:
           timerid=u'%s-%s-%s' % (NAMESPACE,db_gc_id,str(no))
           if cron_info['kind'] == 'cycle':
-            #tid = set_timer(minutes=cron_info['cycle_info']['cycle'],url=cron_info['url'],user_id=email,user_info=no)
             tid = set_timer(minutes=cron_info['cycle_info']['cycle'],url=cron_info['url'],user_id=email,user_info=no,timerid=timerid,sem=False,save_after=True)
           else:
             _c = cron_info['cron_info']
             _crontime = ' '.join([_c['min'],_c['hour'],_c['day'],_c['month'],_c['wday']])
-            #tid = set_timer(crontime=_crontime,url=cron_info['url'],user_id=email,user_info=no,tz_hours=_c['tz_hours'])
             tid = set_timer(crontime=_crontime,url=cron_info['url'],user_id=email,user_info=no,tz_hours=_c['tz_hours'],timerid=timerid,sem=False,save_after=True)
           
           if tid:
@@ -1289,7 +1136,7 @@ class restoreTimer(webapp.RequestHandler):
         
         cron_info['tid'] = tid
       
-      db_gc.croninfo = db.Text(simplejson.dumps(cron_info_dict))
+      db_gc.croninfo = db.Text(json.dumps(cron_info_dict))
       dbPut(db_gc)
       
       last_id = db_gc_id
@@ -1315,7 +1162,9 @@ class restoreTimer(webapp.RequestHandler):
     
     loginfo(str_rsp)
     if flg_first:
-      self.redirect(req.get('return_url',PATH_TOP))
+      return_url = req.get('return_url',PATH_TOP)
+      if isinstance(return_url, unicode): return_url = return_url.encode('utf-8','ignore')
+      self.redirect(return_url)
     else:
       rsp.headers['Content-Type'] = CONTENT_TYPE_PLAIN
       rsp.out.write(str_rsp)
@@ -1340,9 +1189,7 @@ class requestServiceInfo(webapp.RequestHandler):
       prn_html(self,status_code=404)
       return
     
-    #app_id = os.environ.get('APPLICATION_ID',u'')
     app_id = re.sub(u'^.+?~',r'',os.environ.get('APPLICATION_ID',u'')) # remove 's~' prefix
-    #mail_id = str(memcache.incr(key='gaecounter',initial_value=0))
     mail_id = str(memcache.incr(key='gaecounter',initial_value=0,namespace=NAMESPACE))
     
     mail_address = 'gaecron%(mail_id)s@%(app_id)s.appspotmail.com' % dict(mail_id=mail_id,app_id=app_id)
@@ -1351,7 +1198,7 @@ class requestServiceInfo(webapp.RequestHandler):
     
     (current_user_num,remain_user_num) = get_user_info()
     
-    json = simplejson.dumps(dict(mail_address=mail_address,max_user=MAX_USER,max_timer=MAX_TIMER_PER_USER,current_user_num=current_user_num,remain_user_num=remain_user_num))
+    json = json.dumps(dict(mail_address=mail_address,max_user=MAX_USER,max_timer=MAX_TIMER_PER_USER,current_user_num=current_user_num,remain_user_num=remain_user_num))
     
     rsp.headers['Content-Type'] = CONTENT_TYPE_JS
     rsp.out.write(json)
@@ -1419,7 +1266,7 @@ class startReport(InboundMailHandler):
       text = text + unicode(body)
     text = re.sub(u'[\r\n]',r'',text)
     json = re.sub(u'^[^{]+|[^}]+$',r'',text)
-    params = simplejson.loads(json)
+    params = json.loads(json)
     
     dest_nonce = params.get('nonce',u'')
     if dest_nonce != nonce:
@@ -1453,7 +1300,6 @@ class startReport(InboundMailHandler):
        to = from_address,
        subject = u'GAE-Cron Report',
        body = u'Application ID "%(app_id)s" (%(app_id)s.appspot.com) 上の GAE-Cron を GAE-Cron Club\n%(club_url)s\nに登録します。\n' % dict(app_id=app_id,club_url=club_url)
-       #html = json,
       )
     except Exception, s:
       logerr(u'startReport: send from %s => %s ' % (from_address,str(s)))
@@ -1524,32 +1370,53 @@ class stopReport(webapp.RequestHandler):
 #} // end of class stopReport()
 
 
-#{ // def main()
-def main():
-  logging.getLogger().setLevel(DEBUG_LEVEL)
-  
-  application = webapp.WSGIApplication([
-    (PATH_TOP                         , toppage           ),
-    (PATH_USER_FORMAT % (u'\d+')+u'.*', userpage          ),
-    (PATH_CHECK_TIMER                 , checkTimer        ),
-    (PATH_RESTORE_TIMER               , restoreTimer      ),
-    (PATH_REQUEST_SERV_INFO           , requestServiceInfo),
-    (PATH_START_REPORT                , startReport       ),
-    (PATH_STOP_REPORT                 , stopReport        ),
-    (PATH_TOP+u'.*'                   , redirectToTop     ),
-  ],debug=DEBUG_FLAG)
-  wsgiref.handlers.CGIHandler().run(application)
+"""
+##{ // def main()
+#def main():
+#  logging.getLogger().setLevel(DEBUG_LEVEL)
+#  
+#  application = webapp.WSGIApplication([
+#    (PATH_TOP                         , toppage           ),
+#    (PATH_USER_FORMAT % (u'\d+')+u'.*', userpage          ),
+#    (PATH_CHECK_TIMER                 , checkTimer        ),
+#    (PATH_RESTORE_TIMER               , restoreTimer      ),
+#    (PATH_REQUEST_SERV_INFO           , requestServiceInfo),
+#    (PATH_START_REPORT                , startReport       ),
+#    (PATH_STOP_REPORT                 , stopReport        ),
+#    (PATH_TOP+u'.*'                   , redirectToTop     ),
+#  ],debug=DEBUG_FLAG)
+#  wsgiref.handlers.CGIHandler().run(application)
+#
+##} // end of def main()
+#
+#
+#if __name__ == "__main__":
+#  main()
+"""
 
-#} // end of def main()
+logging.getLogger().setLevel(DEBUG_LEVEL)
+app = webapp.WSGIApplication([
+  (PATH_TOP                         , toppage           ),
+  (PATH_USER_FORMAT % (u'\d+')+u'.*', userpage          ),
+  (PATH_CHECK_TIMER                 , checkTimer        ),
+  (PATH_RESTORE_TIMER               , restoreTimer      ),
+  (PATH_REQUEST_SERV_INFO           , requestServiceInfo),
+  (PATH_START_REPORT                , startReport       ),
+  (PATH_STOP_REPORT                 , stopReport        ),
+  (PATH_TOP+u'.*'                   , redirectToTop     ),
+],debug=DEBUG_FLAG)
 
-
-if __name__ == "__main__":
-  main()
 
 """
 #==============================================================================
 # 更新履歴
 #==============================================================================
+2014.04.20: version 0.0.3
+ - 使用 runtime を Python 2.5 から Python 2.7 へ変更。
+ 
+ - 使用するテンプレートエンジンを Django 0.96 から Jinja2 2.6 へ変更。
+
+
 2011.05.15: version 0.0.2a
  - 使用するDjangoのバージョンを明示(appengine_config.py)。
  

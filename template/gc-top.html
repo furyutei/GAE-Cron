@@ -73,9 +73,9 @@
 <h2>注意事項・免責事項</h2>
 <div class="container note">
 <ol>
-  <li>テスト運用中につき、予告無く使用出来なくなる場合が有ります。</li>
-  <li>ご利用は自己責任でお願いします。本サービスの動作および本サービスを使用したことに伴ういかなる弊害についても製作者は責任を負いません。</li>
-  <li>実行時刻の精度には期待しないで下さい。やっつけで作ったものであり、動作が不安定になる可能性も高いです。</li>
+  <li>各種事情により、予告無く使用出来なくなる場合が有ります。</li>
+  <li>ご利用は自己責任でお願いします。本サービスの動作および本サービスを使用したことに伴ういかなる弊害についても管理者および<a href="https://twitter.com/furyutei">製作者</a>は責任を負いません。</li>
+  <li>実行時刻の精度には期待しないで下さい。また、不具合や<a href="https://code.google.com/status/appengine">プラットフォーム(Google App Engine)側の状況</a>により、動作が不安定になることもあります。</li>
   <li>ユーザ登録は<span class="counter">先着{{max_user}}名様</span>限定。<br />周期設定できるURLは、1ユーザあたり<span class="counter">{{max_cron}}個まで</span>です。</li>
 </ol>
 </div>
@@ -84,7 +84,6 @@
 <h2>登録ユーザ数</h2>
 <div class="container note">
   現在<span class="counter">{{user_num}}名</span>。{%if remain_user_num %}あと<span class="counter">{{remain_user_num}}名</span>登録可能。{% else %}<span class="warning">定員に達しましたので、現在新既登録は出来ません。</a>{% endif %}
-    <div class="mutter">定員に達した場合、『<a href="http://gaecronclub.appspot.com/">GAE-Cron Club</a>』を覗いてみてください。空きのあるプロバイダが見つかるかも…？</div>
 </div>
 
 {% if is_admin %}
@@ -100,7 +99,7 @@
 
 <div id="footer">
 <hr />
-<div class="credits">{{credits}}</div>
+<div class="credits">{% autoescape false %}{{credits}}{% endautoescape %}</div>
 </div>
 
 <div id="mask"></div>

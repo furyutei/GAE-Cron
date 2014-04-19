@@ -8,8 +8,8 @@
         <input type="submit" name="submit" value="{% if timerinfo.exist %}更新{% else %}登録{% endif %}" class="submit" />
         <div class="trail_status"></div>
         <div class="form-param-part">
-          <input type="radio" name="kind" value="cycle" {% ifequal timerinfo.kind 'cycle' %}checked="checked"{% endifequal %} class="button" onclick="suspend(this,'cron')"/>周期：<input type="text" name="cycle" value="{{timerinfo.cycle}}" class="text-value-short" />分<br />
-          <input type="radio" name="kind" value="cron" {% ifequal timerinfo.kind 'cron' %}checked="checked"{% endifequal %} class="button" onclick="suspend(this,'cycle')"/>定刻：
+          <input type="radio" name="kind" value="cycle" {% if timerinfo.kind == 'cycle' %}checked="checked"{% endif %} class="button" onclick="suspend(this,'cron')"/>周期：<input type="text" name="cycle" value="{{timerinfo.cycle}}" class="text-value-short" />分<br />
+          <input type="radio" name="kind" value="cron" {% if timerinfo.kind == 'cron' %}checked="checked"{% endif %} class="button" onclick="suspend(this,'cycle')"/>定刻：
             <input type="text" name="min" value="{{timerinfo.min}}" class="text-value-short" />分(0～59)
             <input type="text" name="hour" value="{{timerinfo.hour}}" class="text-value-short" />時(0～23)
             <input type="text" name="day" value="{{timerinfo.day}}" class="text-value-short" />日(1～31)
