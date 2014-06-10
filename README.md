@@ -25,7 +25,7 @@ version 0.0.3
   
 + (リソース制限はありますが、Free Quotaの範囲であれば)無料で使用できます。
 + Google アカウントが必要ですので、予め[作成しておいてください](https://www.google.com/accounts/NewAccount?hl=ja)。
-+ メールが送受信できる携帯電話が必要です。
++ Google App Engineへの登録には、メールが送受信できる携帯電話が必要です。
 
 
 ■ 必要なものは？
@@ -34,23 +34,23 @@ UTF-8が編集出来るテキストエディタと、Python 2.7.x、それにGoo
 
 ### テキストエディタ ###
 文字コードとしてUTF-8が使用可能なテキストエディタであれば、特に制限はありません。  
-無料で使えるエディタもあります(http://techacademy.jp/magazine/986)ので、お好みのものをお使いください。
+[無料で使えるエディタもあります](http://techacademy.jp/magazine/986)ので、お好みのものをお使いください。
 
 ### Python ###
-Python は、[Releases | Python.org](http://www.python.org:/download/releases/) から、開発環境(OS)にあった 2.7.x 系をダウンロードして、インストールして下さい。  
+Python は、[Our Downloads | Python.org](https://www.python.org/downloads/) から、開発環境(OS)にあった 2.7.x 系をダウンロードして、インストールして下さい。  
 
-+ 2014/04/19 現在、Python 2.7.6 (November 10, 2013) が最新のようです。
-+ Python には他の系列(2.6.x や、3.x.x 等)もありますが、こちらだと SDK が対応していないため、***必ず 2.7.x 系を使用するように***して下さい。
++ 2014/06/10 現在、[Python 2.7.7 (June 1, 2014)](https://www.python.org/download/releases/2.7.7/) が最新のようです。ただ、[最新版を使うと思わぬエラーが出ることもあるようです](http://d.hatena.ne.jp/thinkAmi/20140402/1396389280)。問題があるようなら、[2.7.5](https://www.python.org/download/releases/2.7.5/)をお試しください。
++ Python には他の系列（2.5.x、2.6.x 、3.x.x 等）もありますが、こちらだと Google App Engine SDK が対応していないため、***必ず 2.7.x 系を使用するように***して下さい。
 
 ### Google App Engine SDK ###
-SDK は、[Download the Google App Engine SDK - Google App Engine ? Google Developers](https://developers.google.com/appengine/downloads?hl=ja)の Google App Engine SDK for Python を開発環境(Windows、Mac OS X、Linux/Other Platforms）に応じてダウンロードし、インストールして下さい。  
+SDK は、[Download the Google App Engine SDK - Google App Engine ? Google Developers](https://developers.google.com/appengine/downloads?hl=ja)の Google App Engine SDK for Python（三角形をクリックするとダウンロード用のリンク等が表示されます）を開発環境(Windows、Mac OS X、Linux/Other Platforms）に応じてダウンロードし、インストールして下さい。  
 ※ SDK は頻繁に更新されます。なるべく最新のものをご使用願います。
 
 ### 参考 ###
 GAE/Python の開発やデプロイについての詳細は、
 
 + [Python Runtime Environment - Google App Engine ? Google Developers](https://developers.google.com/appengine/docs/python/?hl=ja)
-+ [Google App Engineへの登録と開発環境のセットアップ(Python編)(http://d.hatena.ne.jp/furyu-tei/20100115/gaeregister)
++ [Google App Engineへの登録と開発環境のセットアップ（Python編）](http://d.hatena.ne.jp/furyu-tei/20100115/gaeregister)
 + [『GAE-Cron』のソース＆サービス登録サイト公開](http://d.hatena.ne.jp/furyu-tei/20100115/gaecronclub)
 
 などを参照して下さい。
@@ -87,7 +87,7 @@ GAE/Python の開発やデプロイについての詳細は、
             +-- appengine-noborder-120x30.gif
   
   
-  後で説明する修正箇所の修正が完了したら、ネット上にアップロード(デプロイ)します。
+  後で説明する箇所の修正が完了したら、ネット上にアップロード(デプロイ)します。
   
   Windows 7の場合、例えば  
   C:\GAE\GAE-Cron  
@@ -204,7 +204,7 @@ GAE/Python の開発やデプロイについての詳細は、
   基本的には、どのversionからの移行でも実施する必要があります。  
   ただし、0.02*から移行時には、うまく行けば再設定しなくてもいいかもしれません（それでも、うまくいってなさそうなときはやはり実施が必要です）。
 
-  この操作を実施すると、タイマがリセットされるので、特に長い周期のタイマを設定している人には影響が大きいと思われますが、今のところ対処の予定はありません。
+  この操作を実施するとタイマがリセットされるため、特に長い周期のタイマを設定している人には影響が大きいと思われますが、今のところ対処の予定はありません。
 
 
 ■ Google App Engineの正式サービス開始に伴う影響について
@@ -215,9 +215,9 @@ GAE/Python の開発やデプロイについての詳細は、
   ※主に影響するのは、管理画面の Dashboard 等で表示される "Frontend Instance Hours" です。"Over Quota"が出るような場合、ここのバーが赤く、100%になっていると思います。
 
 ### 対策 ###
-  Google App Engine の管理画面から、  
+  Google App Engine の管理画面で、  
     Administration > Application Settings > Performance
-  に、"Max Idle Instances" と "Min Pending Latency" というふたつのスライダがありますが、
+  とたどっていくと、"Max Idle Instances" と "Min Pending Latency" というふたつのスライダがありますが、
 
 + "Max Idle Instances" を "Automatic" から "1" に下げる（左・Min方向にずらす）
 + "Min Pending Latency" を "Automatic" から "15s" に上げる（右・Max方向にずらす）
